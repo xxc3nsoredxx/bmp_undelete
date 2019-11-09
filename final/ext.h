@@ -3,6 +3,13 @@
 
 #include <stdint.h>
 
+#define BYTES_PER_BLOCK     (4 * 1024)
+#define BLOCKS_PER_GROUP    (8 * BYTES_PER_BLOCK)
+#define BYTES_PER_GROUP     (BLOCKS_PER_GROUP * BYTES_PER_BLOCK)
+#define SB_OFF              (1024)
+#define GD_OFF(G)           (BYTES_PER_BLOCK + ((G) * sizeof(struct gd_s)))
+#define BLOCK_OFF(B)        ((B) * BYTES_PER_BLOCK)
+
 struct sb_s {
     uint32_t s_inodes_count;
     uint32_t s_blocks_count_lo;
