@@ -1,0 +1,3 @@
+1. Find BMP first blocks
+2. Find indirect blocks
+3. Link to root directory
