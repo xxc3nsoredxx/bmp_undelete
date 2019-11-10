@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 
+#define link    _link
+
 #define BYTES_PER_BLOCK     (4 * 1024)
 #define BLOCKS_PER_GROUP    (8 * BYTES_PER_BLOCK)
 #define BYTES_PER_GROUP     (BLOCKS_PER_GROUP * BYTES_PER_BLOCK)

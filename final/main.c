@@ -27,12 +27,9 @@ uint8_t *dev = MAP_FAILED;
 uint32_t nblocks;
 uint32_t ngroups;
 struct sb_s *sb = 0;
-struct gd_s *gd = 0;
 size_t ipg;
 size_t ipb;
-struct inode_s *root;
-uint32_t root_bnum = 0;
-uint8_t *root_block = 0;
+struct gd_s **gd = 0;
 uint8_t **block_bmps = 0;
 uint8_t **inode_bmps = 0;
 uint32_t *bmp_starts = 0;
@@ -44,6 +41,7 @@ size_t n_indirects [3] = {
     0, 0, 0
 };
 struct inode_s *i = 0;
+char target_name [100];
 uint32_t target_inum = 0;
 
 void usage () {
@@ -56,6 +54,8 @@ void usage () {
  */
 void cleanup () {
     uint32_t cx;
+
+    printf(INFO("Cleaning up junk\n"));
 
     for (cx = 0; cx < 3; cx++) {
         if ((indirects + cx)) {
@@ -70,6 +70,9 @@ void cleanup () {
     }
     if (block_bmps) {
         free(block_bmps);
+    }
+    if (gd) {
+        free(gd);
     }
     if (dev != MAP_FAILED) {
         munmap(dev, dev_size);
@@ -119,14 +122,6 @@ void init (const char *fname) {
 
     /* Calculate the number of inodes per block */
     ipb = BYTES_PER_BLOCK / sb->s_inode_size;
-
-    /* Get the root inode information */
-    gd = (struct gd_s*)(dev + GD_OFF(0));
-    root = (struct inode_s*)(dev +
-        BLOCK_OFF(gd->bg_inode_table_lo) +
-        ((ROOT_INODE - 1) * sb->s_inode_size));
-    root_bnum = *((uint32_t*)(root->i_block));
-    root_block = (uint8_t*)(dev + BLOCK_OFF(root_bnum));
 }
 
 /*
@@ -170,6 +165,35 @@ int search (uint32_t *list, size_t len, uint32_t b) {
     }
 
     return 0;
+}
+
+/*
+ * Go through every group and save information about them
+ */
+void get_group_info () {
+    uint32_t cx;
+
+    /* Allocate space for the group descriptor and bitmap pointers */
+    gd = calloc(ngroups, sizeof(*gd));
+    block_bmps = calloc(ngroups, sizeof(*block_bmps));
+    inode_bmps = calloc(ngroups, sizeof(*inode_bmps));
+
+    /* Parse the drive group by group */
+    printf(INFO("Saving information about group:"));
+    for (cx = 0; cx < ngroups; cx++) {
+        printf(" %u", cx);
+
+        /* Get the group descriptor */
+        *(gd + cx) = (struct gd_s*)(dev + GD_OFF(cx));
+
+        /* Get the bitmaps */
+        *(block_bmps + cx) = (uint8_t*)
+            (dev + BLOCK_OFF((*(gd + cx))->bg_block_bitmap_lo));
+        *(inode_bmps + cx) = (uint8_t*)
+            (dev + BLOCK_OFF((*(gd + cx))->bg_inode_bitmap_lo));
+    }
+    printf("\n");
+    printf(INFO("Done!\n\n"));
 }
 
 /*
@@ -236,45 +260,15 @@ int res_inode (uint32_t inum) {
     uint32_t ioff = iindex * sb->s_inode_size;
     uint8_t *bmp = *(inode_bmps + igroup);
 
-    /* Get the group descriptor */
-    gd = (struct gd_s*)(dev + GD_OFF(igroup));
-
     /* Reserve the inode if it is free */
     if (BMP_BIT(bmp, iindex) == 0) {
         set_bmp_bit(bmp, iindex);
-        i = (struct inode_s*)(dev + BLOCK_OFF(gd->bg_inode_table_lo) + ioff);
+        i = (struct inode_s*)(dev +
+            BLOCK_OFF((*(gd + igroup))->bg_inode_table_lo) + ioff);
         return 1;
     }
 
     return 0;
-}
-
-/*
- * Go through every group and save the block and inode bitmaps
- */
-void get_bitmaps () {
-    uint32_t cx;
-
-    /* Allocate space for the bitmap pointers */
-    block_bmps = calloc(ngroups, sizeof(*block_bmps));
-    inode_bmps = calloc(ngroups, sizeof(*inode_bmps));
-
-    /* Parse the drive group by group */
-    printf(INFO("Saving bitmaps for group:"));
-    for (cx = 0; cx < ngroups; cx++) {
-        printf(" %u", cx);
-
-        /* Get the group descriptor */
-        gd = (struct gd_s*)(dev + GD_OFF(cx));
-
-        /* Get the bitmaps */
-        *(block_bmps + cx) = (uint8_t*)
-            (dev + BLOCK_OFF(gd->bg_block_bitmap_lo));
-        *(inode_bmps + cx) = (uint8_t*)
-            (dev + BLOCK_OFF(gd->bg_inode_bitmap_lo));
-    }
-    printf("\n");
-    printf(INFO("Done!\n\n"));
 }
 
 /*
@@ -419,6 +413,80 @@ void scan () {
     printf(INFO("Done!\n\n"));
 }
 
+/*
+ * Links the inode to the root directory
+ */
+void link (uint32_t file) {
+    struct inode_s *root = 0;
+    uint32_t root_bnum = 0;
+    uint8_t *root_block = 0;
+    struct dir_ent_s *de = 0;
+    int entered = 0;
+
+    /* Get the root inode information */
+    root = (struct inode_s*)(dev +
+        BLOCK_OFF((*gd)->bg_inode_table_lo) +
+        ((ROOT_INODE - 1) * sb->s_inode_size));
+    root_bnum = *((uint32_t*)(root->i_block));
+    root_block = (uint8_t*)(dev + BLOCK_OFF(root_bnum));
+
+    /* Link to root */
+    printf(INFO("Linking inode %u to root directory...\n"), target_inum);
+    memset(target_name, 0, sizeof(target_name));
+    sprintf(target_name, "recovered_%03u.bmp", file);
+    de = (struct dir_ent_s*)root_block;
+    for (;;) {
+        uint16_t new_rec_len = sizeof(de->inode) +
+            sizeof(de->rec_len) +
+            sizeof(de->name_len) +
+            sizeof(de->file_type) +
+            strlen(target_name);
+        uint16_t real_rec_len = sizeof(de->inode) +
+            sizeof(de->rec_len) +
+            sizeof(de->name_len) +
+            sizeof(de->file_type) +
+            de->name_len;
+
+        /* Round up to nearest multiple of 4 */
+        real_rec_len += 4 - (real_rec_len % 4);
+        new_rec_len += 4 - (new_rec_len % 4);
+
+        /* Calculate if the current entry is the last entry */
+        if ((uint8_t*)de - root_block + de->rec_len == BYTES_PER_BLOCK) {
+            /* Test if entry fits */
+            if (de->rec_len - real_rec_len >= new_rec_len) {
+                /* Set new_rec_len to go to the end of the block */
+                new_rec_len = de->rec_len - real_rec_len;
+                /* Set the rec_len to go to the start of the new record */
+                de->rec_len = real_rec_len;
+
+                /* Get the next entry */
+                de = (struct dir_ent_s*)((char*)de + de->rec_len);
+                /* Build the directory entry */
+                de->inode = target_inum;
+                de->rec_len = new_rec_len;
+                de->name_len = strlen(target_name);
+                strncpy(de->name, target_name, de->name_len);
+
+                entered = 1;
+                break;
+            } else {
+                break;
+            }
+        }
+
+        /* Get the next entry */
+        de = (struct dir_ent_s*)((char*)de + de->rec_len);
+    }
+    if (entered) {
+        printf(INFO("Done!\n"));
+        printf(GOOD("File name: %s\n\n"), target_name);
+    } else {
+        printf(BAD("Failed to link, exiting...\n"));
+        exit(-1);
+    }
+}
+
 int main (int argc, char **argv) {
     uint32_t cx;
     uint32_t cx2;
@@ -444,9 +512,9 @@ int main (int argc, char **argv) {
     /* Initialize */
     init(*(argv + 1));
 
-    /* Get the block and inode bitmaps */
-    get_bitmaps();
-    if (!block_bmps || !inode_bmps) {
+    /* Get information about each group */
+    get_group_info();
+    if (!gd || !block_bmps || !inode_bmps) {
         printf(BAD("Error getting bitmaps, exiting...\n"));
         exit(-1);
     }
@@ -458,16 +526,13 @@ int main (int argc, char **argv) {
         exit(-1);
     }
 
-    /* Create entries for the files */
+    /* Create entries for the files found */
     for (cx = 0; cx < n_bmp_starts; cx++) {
         struct bmp_head_s *bmp_head = (struct bmp_head_s*)(dev +
             BLOCK_OFF(*(bmp_starts + cx)));
         uint32_t size = bmp_head->bmp_file_size;
         uint32_t size_blocks = size / BYTES_PER_BLOCK;
         uint32_t *iblocks;
-        char target_name [100];
-        struct dir_ent_s *de;
-        int entered = 0;
 
         /* Ensure that overflow is accounted for */
         size_blocks += (size % BYTES_PER_BLOCK) ? 1 : 0;
@@ -491,8 +556,8 @@ int main (int argc, char **argv) {
         }
         printf(GOOD("Reserved inode %u!\n"), target_inum);
 
-        printf(INFO("Populating inode %u...\n"), target_inum);
         /* Populate the inode with required fields */
+        printf(INFO("Populating inode %u...\n"), target_inum);
         i->i_mode = MODE_777 | TYPE_REG;
         i->i_size_lo = size;
         i->i_links_count = 1;
@@ -530,63 +595,9 @@ int main (int argc, char **argv) {
         i->i_extra_isize = 32;
         printf(INFO("Done!\n\n"));
 
-        printf(INFO("Linking inode %u to root directory...\n"), target_inum);
-        memset(target_name, 0, sizeof(target_name));
-        sprintf(target_name, "recovered_%03u.bmp", cx);
-        /* Link to root */
-        de = (struct dir_ent_s*)root_block;
-        for (;;) {
-            uint16_t new_rec_len = sizeof(de->inode) +
-                sizeof(de->rec_len) +
-                sizeof(de->name_len) +
-                sizeof(de->file_type) +
-                strlen(target_name);
-            uint16_t real_rec_len = sizeof(de->inode) +
-                sizeof(de->rec_len) +
-                sizeof(de->name_len) +
-                sizeof(de->file_type) +
-                de->name_len;
-
-            /* Round up to nearest multiple of 4 */
-            real_rec_len += 4 - (real_rec_len % 4);
-            new_rec_len += 4 - (new_rec_len % 4);
-
-            /* Calculate if the current entry is the last entry */
-            if ((uint8_t*)de - root_block + de->rec_len == BYTES_PER_BLOCK) {
-                /* Test if entry fits */
-                if (de->rec_len - real_rec_len >= new_rec_len) {
-                    /* Set new_rec_len to go to the end of the block */
-                    new_rec_len = de->rec_len - real_rec_len;
-                    /* Set the rec_len to go to the start of the new record */
-                    de->rec_len = real_rec_len;
-
-                    /* Get the next entry */
-                    de = (struct dir_ent_s*)((char*)de + de->rec_len);
-                    /* Build the directory entry */
-                    de->inode = target_inum;
-                    de->rec_len = new_rec_len;
-                    de->name_len = strlen(target_name);
-                    strncpy(de->name, target_name, de->name_len);
-
-                    entered = 1;
-                    break;
-                } else {
-                    break;
-                }
-            }
-
-            /* Get the next entry */
-            de = (struct dir_ent_s*)((char*)de + de->rec_len);
-        }
-        if (entered) {
-            printf(INFO("Done!\n\n"));
-            printf(GOOD("File name: %s\n"), target_name);
-        } else {
-            printf(BAD("Failed to link, exiting...\n"));
-            exit(-1);
-        }
+        /* Link the inode to the root directory */
+        link(cx);
     }
 
-    /* Cleanup and exit */
     exit(0);
 }
