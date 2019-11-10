@@ -543,21 +543,31 @@ int main (int argc, char **argv) {
             *(iblocks + cx2) = *(bmp_starts + cx) + cx2;
             mark_used(*(bmp_starts + cx) + cx2, 0);
         }
-        /* Populate 3x indirect blocks */
-        if (*(n_indirects + 2)) {
-            *(iblocks + TRI_IND) = *(indirects + 2);
-            mark_used(*(indirects + 2), 3);
+        /* Populate 1x indirect block */
+        if (*(n_indirects + 0)) {
+            /* Find the indirect block that has the next block */
+            for (cx2 = 0; cx2 < *(n_indirects + 0); cx2++) {
+                uint32_t *blk = (uint32_t*)
+                    (dev + BLOCK_OFF(*(*(indirects + 0) + cx2)));
+                if (*blk == *(iblocks + 11) + 1) {
+                    *(iblocks + SIN_IND) = *(*(indirects + 0) + cx2);
+                    mark_used(*(*(indirects + 0) + cx2), 1);
+                    break;
+                }
+            }
         }
-        /* Populate 2x indirect blocks */
+        /*
+        Populate 2x indirect block
         if (*(n_indirects + 1)) {
             *(iblocks + DBL_IND) = *(indirects + 1);
             mark_used(*(indirects + 1), 2);
         }
-        /* Populate 1x indirect blocks */
-        if (*(n_indirects + 0)) {
-            *(iblocks + SIN_IND) = *(indirects + 0);
-            mark_used(*(indirects + 0), 1);
+        Populate 3x indirect block
+        if (*(n_indirects + 2)) {
+            *(iblocks + TRI_IND) = *(indirects + 2);
+            mark_used(*(indirects + 2), 3);
         }
+        */
         i->i_extra_isize = 32;
         printf(INFO("Done!\n\n"));
 
