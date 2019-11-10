@@ -9,8 +9,8 @@
 #define SB_OFF              (1024)
 #define GD_OFF(G)           (BYTES_PER_BLOCK + ((G) * sizeof(struct gd_s)))
 #define BLOCK_OFF(B)        ((B) * BYTES_PER_BLOCK)
-#define BLOCK_BIT(BM, BL)   (((*((BM) + ((BL) / 8)) & 0xFF) >> \
-                            ((BL) % 8)) & 0x01)
+#define BMP_BIT(BM, B)      (((*((BM) + ((B) / 8)) & 0xFF) >> \
+                            ((B) % 8)) & 0x01)
 
 struct sb_s {
     uint32_t s_inodes_count;
@@ -104,7 +104,7 @@ struct sb_s {
     uint32_t s_checksum_seed;
     uint32_t s_reserved [98];
     uint32_t s_checksum;
-};
+} __attribute__((packed));
 
 struct gd_s {
     uint32_t bg_block_bitmap_lo;
@@ -119,7 +119,7 @@ struct gd_s {
     uint16_t bg_inode_bitmap_csum_lo;
     uint16_t bg_itable_unused_lo;
     uint16_t bg_checksum;
-};
+} __attribute__((packed));
 
 struct inode_s {
     uint16_t i_mode;
@@ -174,13 +174,13 @@ struct inode_s {
     uint32_t i_crtime_extra;
     uint32_t i_version_hi;
     uint32_t i_projid;
-};
+} __attribute__((packed));
 
 struct dir_ent_s {
     uint32_t inode;
     uint16_t rec_len;
     uint16_t name_len;
     char     name[255];
-};
+} __attribute__((packed));
 
 #endif /* EXT_H_20191108_234825 */

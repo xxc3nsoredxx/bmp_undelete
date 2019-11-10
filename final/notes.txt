@@ -1,13 +1,23 @@
 * Distinguish between blocks marked free and blocks marked used
 * Find potential BMP start blocks that are marked free
 * Find potential indirect blocks that are marked free
-    a. Differentiate between first, second, and third indirects
+    a. Differentiate between 1x, 2x, and 3x indirects
     b. Determine the proper order
 * Find free inode (priority on 6969, 666, 420)
 * Populate inode with metadata
 * Link to root directory
 
-Block bitmap structure
+test_mandelbrot.bmp (inode 14):
+    Size (given in inode): 720054
+    Size (given in header): 720055
+    First direct block: 17425
+    Last direct block: 17436
+    1x indirect: 17051
+        begins with block 17437
+    2x indirect: n/a
+    3x indirect: n/a
+
+Block bitmap structure:
 Byte number:    (block - group initial block) / 8
 Bit number:     (block - group initial block) % 8
 Bit:    7654 3210  7654 3210

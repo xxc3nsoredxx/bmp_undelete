@@ -6,12 +6,12 @@
 extern const char BMP_MAGIC [];
 
 struct bmp_head_s {
-    uint16_t bmp_magic;
+    uint8_t  bmp_magic [2];
     uint32_t bmp_file_size;
     uint16_t bmp_res1;
     uint16_t bmp_res2;
     uint32_t bmp_pixel_off;
-};
+} __attribute__((packed));
 
 struct dib_head_s {
     uint32_t dib_size;
@@ -25,6 +25,6 @@ struct dib_head_s {
     int32_t  dib_vert_ppm;
     uint32_t dib_cols_in_palette;
     uint32_t dib_import_cols;
-};
+} __attribute__((packed));
 
 #endif /* BMP_H_20191109_000920 */
