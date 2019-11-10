@@ -1,3 +1,31 @@
-1. Find blocks that could hold the start of a BMP file
-2. Find indirect blocks
-3. Link to root directory
+* Distinguish between blocks marked free and blocks marked used
+* Find potential BMP start blocks that are marked free
+    a. Get the file sizes
+* Find potential indirect blocks that are marked free
+    a. Differentiate between first, second, and third indirects
+    b. Determine the proper order
+* Find free inode (priority on 6969, 666, 420)
+* Populate inode with metadata
+* Link to root directory
+
+Block bitmap structure
+Bit:    7654 3210  7654 3210
+0x0000: 0000 0000  0000 0000            Byte number:    (block - group) / 8
+0x0002: |||| ||||  |||| ||||            Bit number:     (block - group) % 8
+        |||| ||||  |||| |||+ block 8
+        |||| ||||  |||| ||+- block 9
+        |||| ||||  |||| |+-- block 10
+        |||| ||||  |||| +--- block 11
+        |||| ||||  |||+----- block 12
+        |||| ||||  ||+------ block 13
+        |||| ||||  |+------- block 14
+        |||| ||||  +-------- block 15
+        |||| ||||
+        |||| |||+----------- block 0
+        |||| ||+------------ block 1
+        |||| |+------------- block 2
+        |||| +-------------- block 3
+        |||+---------------- block 4
+        ||+----------------- block 5
+        |+------------------ block 6
+        +------------------- block 7

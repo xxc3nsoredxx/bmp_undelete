@@ -24,10 +24,13 @@
 int devf = -1;
 size_t dev_size;
 char *dev = MAP_FAILED;
-size_t nblocks;
+uint32_t nblocks;
+uint32_t ngroups;
 struct sb_s *sb = 0;
 size_t ipg;
 size_t ipb;
+uint32_t *used_blocks = 0;
+uint32_t n_used_blocks = 0;
 uint32_t *bmp_starts = 0;
 size_t n_bmp_starts = 0;
 uint32_t *indirects [3] = {
@@ -46,7 +49,7 @@ void usage () {
  * Cleanup tasks
  */
 void cleanup (int exit_code) {
-    int cx;
+    uint32_t cx;
 
     for (cx = 0; cx < 3; cx++) {
         if ((indirects + cx)) {
@@ -55,6 +58,9 @@ void cleanup (int exit_code) {
     }
     if (bmp_starts) {
         free(bmp_starts);
+    }
+    if (used_blocks) {
+        free(used_blocks);
     }
     if (dev != MAP_FAILED) {
         munmap(dev, dev_size);
@@ -95,6 +101,9 @@ void init (const char *fname) {
     /* Calculate the number of blocks on the drive */
     nblocks = dev_size / BYTES_PER_BLOCK;
 
+    /* Calculate the number of groups on the drive */
+    ngroups = dev_size / BYTES_PER_GROUP;
+
     /* Get the superblock */
     sb = (struct sb_s*)(dev + SB_OFF);
 
@@ -106,6 +115,86 @@ void init (const char *fname) {
 }
 
 /*
+ * Do an insertion sort on list of length len
+ * Based on the pseudocode found on the Wikipedia page for insertion sort,
+ * 2019-11-09 19:09:20 CST
+ */
+void sort (uint32_t *list, size_t len) {
+    uint32_t cx;
+    uint32_t cx2;
+
+    for (cx = 1; cx < len; cx++) {
+        for (cx2 = cx; cx2 > 0 && *(list + cx2 - 1) > *(list + cx2); cx2--) {
+            *(list + cx2 - 1) ^= *(list + cx2);
+            *(list + cx2) ^= *(list + cx2 - 1);
+            *(list + cx2 - 1) ^= *(list + cx2);
+        }
+    }
+}
+
+/*
+ * Do a binary search to test if list of length len contains block b
+ * Based on the pseudocode found on the Wikipedia page for binary search,
+ * 2019-11-09 19:18:35 CST
+ * Return 1 if b in list, 0 otherwise
+ */
+int search (uint32_t *list, size_t len, uint32_t b) {
+    int l;
+    int r;
+    int m;
+
+    for (l = 0, r = len - 1; l <= r; ) {
+        m = (l + r) / 2;
+        if (*(list + m) < b) {
+            l = m + 1;
+        } else if (*(list + m) > b) {
+            r = m - 1;
+        } else {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+/*
+ * Go through every group's data block bitmap and log all used blocks
+ */
+void get_used_data () {
+    uint32_t cx;
+    uint32_t cx2;
+    struct gd_s *gd;
+    uint8_t *bitmap;
+
+    /* Parse the drive group by group */
+    printf(INFO("Parsing block bitmap for group:"));
+    for (cx = 0; cx < ngroups; cx++) {
+        printf(" %u", cx);
+
+        /* Get the group descriptor */
+        gd = (struct gd_s*)(dev + GD_OFF(cx));
+
+        used_blocks = realloc(used_blocks,
+            (n_used_blocks + BLOCKS_PER_GROUP - gd->bg_free_blocks_count_lo) *
+                sizeof(*used_blocks));
+
+        /* Get the block bitmap */
+        bitmap = (uint8_t*)(dev + BLOCK_OFF(gd->bg_block_bitmap_lo));
+
+        /* Go through the block bitmap */
+        for (cx2 = 0; cx2 < BLOCKS_PER_GROUP; cx2++) {
+            if (BLOCK_BIT(bitmap, cx2) == 1) {
+                *(used_blocks + n_used_blocks) = (cx * BLOCKS_PER_GROUP) + cx2;
+                n_used_blocks++;
+            }
+        }
+    }
+    printf("\n");
+    printf(INFO("Done!\n"));
+    printf(INFO("%u used blocks found\n\n"), n_used_blocks);
+}
+
+/*
  * Go through the drive and find all the potential BMP starting blocks
  */
 void get_bmp_start () {
@@ -113,10 +202,15 @@ void get_bmp_start () {
     size_t percent = 0;
     size_t cur_percent;
 
-    printf(INFO("Searching for potential BMP start blocks...\n"));
+    printf(INFO("Searching free blocks for potential BMP start blocks...\n"));
 
     /* Parse each block of the drive and test for BMP magic number */
     for (cx = 0; cx < nblocks; cx++) {
+        /* Skip any blocks marked used */
+        if (search(used_blocks, n_used_blocks, cx)) {
+            continue;
+        }
+
         cur_percent = cx * 100 / nblocks;
         if (!memcmp((dev + BLOCK_OFF(cx)), BMP_MAGIC, 2)) {
             printf(GOOD("Found at block: %u!\n"), cx);
@@ -146,25 +240,21 @@ void get_indirects () {
     size_t percent = 0;
     size_t cur_percent;
     uint32_t *cur_block;
-    uint32_t cur_group;
-    struct gd_s *gd;
     int pot_indir;
     int zero;
 
-    printf(INFO("Searching for potential indirect blocks...\n"));
+    printf(INFO("Searching free blocks for potential indirect blocks...\n"));
 
     /* Parse each block of the drive and test for potential indirect blocks */
     for (cx = 0; cx < nblocks; cx++) {
+        /* Skip any blocks marked used */
+        if (search(used_blocks, n_used_blocks, cx)) {
+            continue;
+        }
+
         cur_percent = cx * 100 / nblocks;
         pot_indir = 0;
         zero = 0;
-
-        /* Get info if a new group */
-        if (cx % BLOCKS_PER_GROUP == 0) {
-            cur_group = cx / BLOCKS_PER_GROUP;
-            /* Get the group descriptor */
-            gd = (struct gd_s*)(dev + GD_OFF(cur_group));
-        }
 
         /* Get the current block */
         cur_block = (uint32_t*)(dev + BLOCK_OFF(cx));
@@ -259,6 +349,13 @@ int main (int argc, char **argv) {
 
     /* Initialize */
     init(*(argv + 1));
+
+    /* Get all the used data blocks */
+    get_used_data();
+    if (!used_blocks) {
+        printf(BAD("Error getting used data blocks, exiting...\n"));
+        cleanup(-1);
+    }
 
     /* Gather all the BMP starting blocks */
     get_bmp_start();

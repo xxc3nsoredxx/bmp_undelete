@@ -15,14 +15,14 @@ struct bmp_head_s {
 
 struct dib_head_s {
     uint32_t dib_size;
-     int32_t dib_width;
-     int32_t dib_height;
+    int32_t  dib_width;
+    int32_t  dib_height;
     uint16_t dib_planes;
     uint16_t dib_bpp;
     uint32_t dib_comp_method;
     uint32_t dib_image_size;
-     int32_t dib_horiz_ppm;
-     int32_t dib_vert_ppm;
+    int32_t  dib_horiz_ppm;
+    int32_t  dib_vert_ppm;
     uint32_t dib_cols_in_palette;
     uint32_t dib_import_cols;
 };

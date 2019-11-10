@@ -9,6 +9,8 @@
 #define SB_OFF              (1024)
 #define GD_OFF(G)           (BYTES_PER_BLOCK + ((G) * sizeof(struct gd_s)))
 #define BLOCK_OFF(B)        ((B) * BYTES_PER_BLOCK)
+#define BLOCK_BIT(BM, BL)   (((*((BM) + ((BL) / 8)) & 0xFF) >> \
+                            ((BL) % 8)) & 0x01)
 
 struct sb_s {
     uint32_t s_inodes_count;
