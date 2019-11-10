@@ -17,6 +17,9 @@
 #define MODE_700            ((0x0100 | 0x0080 | 0x0040) & 0x01C0)
 #define MODE_777            (MODE_007 | MODE_070 | MODE_700)
 #define TYPE_REG            (0x8000)
+#define SIN_IND             (12)
+#define DBL_IND             (13)
+#define TRI_IND             (14)
 
 struct sb_s {
     uint32_t s_inodes_count;

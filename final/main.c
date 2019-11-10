@@ -33,8 +33,8 @@ size_t ipb;
 struct inode_s *root;
 uint32_t root_bnum = 0;
 uint8_t *root_block = 0;
-uint32_t *used_blocks = 0;
-uint32_t n_used_blocks = 0;
+uint8_t **block_bmps = 0;
+uint8_t **inode_bmps = 0;
 uint32_t *bmp_starts = 0;
 size_t n_bmp_starts = 0;
 uint32_t *indirects [3] = {
@@ -65,8 +65,11 @@ void cleanup (int exit_code) {
     if (bmp_starts) {
         free(bmp_starts);
     }
-    if (used_blocks) {
-        free(used_blocks);
+    if (inode_bmps) {
+        free(inode_bmps);
+    }
+    if (block_bmps) {
+        free(block_bmps);
     }
     if (dev != MAP_FAILED) {
         munmap(dev, dev_size);
@@ -172,39 +175,43 @@ int search (uint32_t *list, size_t len, uint32_t b) {
 }
 
 /*
- * Go through every group's data block bitmap and log all used blocks
+ * Go through every group and save the block and inode bitmaps
  */
-void get_used_data () {
+void get_bitmaps () {
     uint32_t cx;
-    uint32_t cx2;
-    uint8_t *bitmap;
+
+    /* Allocate space for the bitmap pointers */
+    block_bmps = calloc(ngroups, sizeof(*block_bmps));
+    inode_bmps = calloc(ngroups, sizeof(*inode_bmps));
 
     /* Parse the drive group by group */
-    printf(INFO("Parsing block bitmap for group:"));
+    printf(INFO("Saving bitmaps for group:"));
     for (cx = 0; cx < ngroups; cx++) {
         printf(" %u", cx);
 
         /* Get the group descriptor */
         gd = (struct gd_s*)(dev + GD_OFF(cx));
 
-        used_blocks = realloc(used_blocks,
-            (n_used_blocks + BLOCKS_PER_GROUP - gd->bg_free_blocks_count_lo) *
-                sizeof(*used_blocks));
-
-        /* Get the block bitmap */
-        bitmap = (uint8_t*)(dev + BLOCK_OFF(gd->bg_block_bitmap_lo));
-
-        /* Go through the block bitmap */
-        for (cx2 = 0; cx2 < BLOCKS_PER_GROUP; cx2++) {
-            if (BMP_BIT(bitmap, cx2) == 1) {
-                *(used_blocks + n_used_blocks) = (cx * BLOCKS_PER_GROUP) + cx2;
-                n_used_blocks++;
-            }
-        }
+        /* Get the bitmaps */
+        *(block_bmps + cx) = (uint8_t*)
+            (dev + BLOCK_OFF(gd->bg_block_bitmap_lo));
+        *(inode_bmps + cx) = (uint8_t*)
+            (dev + BLOCK_OFF(gd->bg_inode_bitmap_lo));
     }
     printf("\n");
-    printf(INFO("Done!\n"));
-    printf(INFO("%u in-use blocks found\n\n"), n_used_blocks);
+    printf(INFO("Done!\n\n"));
+}
+
+/*
+ * Test if a block is used
+ * Return 1 if used, 0 otherwise
+ */
+int is_block_used (uint32_t block) {
+    uint32_t bgroup = block / BLOCKS_PER_GROUP;
+    uint32_t bindex = block % BLOCKS_PER_GROUP;
+    uint8_t *bmp = *(block_bmps + bgroup);
+
+    return BMP_BIT(bmp, bindex);
 }
 
 /*
@@ -247,13 +254,6 @@ int cmp_ind_sin (uint32_t block) {
 
         /* Test if listing ends on first of a set of 4 */
         if (cx % 4 == 0 && *(blk + cx) == 0) {
-            /* If very first listed block, zero is invalid */
-            /*
-            if (cx == 0) {
-                pot_indir = 0;
-                break;
-            }
-            */
 
             /* Begin tracking zeros */
             zero = 1;
@@ -372,30 +372,46 @@ void set_bmp_bit (uint8_t *bmp, uint32_t bit) {
  * Returns 1 if success, 0 if fail
  */
 int res_inode (uint32_t inum) {
-    uint32_t igroup;
-    uint32_t iindex;
-    uint32_t ioff;
-    uint8_t *bitmap;
-
-    /* Calculate location of the inode on disk */
-    igroup = (inum - 1) / ipg;
-    iindex = (inum - 1) % ipg;
-    ioff = iindex * sb->s_inode_size;
+    uint32_t igroup = (inum - 1) / ipg;
+    uint32_t iindex = (inum - 1) % ipg;
+    uint32_t ioff = iindex * sb->s_inode_size;
+    uint8_t *bmp = *(inode_bmps + igroup);
 
     /* Get the group descriptor */
     gd = (struct gd_s*)(dev + GD_OFF(igroup));
 
-    /* Get the inode bitmap */
-    bitmap = (uint8_t*)(dev + BLOCK_OFF(gd->bg_inode_bitmap_lo));
-
     /* Reserve the inode if it is free */
-    if (BMP_BIT(bitmap, iindex) == 0) {
-        set_bmp_bit(bitmap, iindex);
+    if (BMP_BIT(bmp, iindex) == 0) {
+        set_bmp_bit(bmp, iindex);
         i = (struct inode_s*)(dev + BLOCK_OFF(gd->bg_inode_table_lo) + ioff);
         return 1;
     }
 
     return 0;
+}
+
+/*
+ * Mark a block as used in the bitmap, handles indirects
+ */
+void mark_used (uint32_t block, uint32_t ind) {
+    uint32_t cx;
+    uint32_t bgroup = block / BLOCKS_PER_GROUP;
+    uint32_t bindex = block % BLOCKS_PER_GROUP;
+    uint8_t *bmp = *(block_bmps + bgroup);
+    uint32_t *blk;
+
+    /* Handle indirects */
+    if (ind) {
+        blk = (uint32_t*)(dev + BLOCK_OFF(block));
+        for (cx = 0; cx < BYTES_PER_BLOCK / sizeof(*blk); cx++) {
+            /* Only mark non-zero linked blocks */
+            if (*(blk + cx)) {
+                mark_used(*(blk + cx), ind - 1);
+            }
+        }
+    }
+    /* Mark directs and the indirect block itself */
+    set_bmp_bit(bmp, bindex);
 }
 
 int main (int argc, char **argv) {
@@ -421,11 +437,10 @@ int main (int argc, char **argv) {
     /* Initialize */
     init(*(argv + 1));
 
-    /* Get all the used data blocks */
-    get_used_data();
-    if (!used_blocks) {
-        printf(BAD("Error getting used data blocks, exiting...\n"));
-        cleanup(-1);
+    /* Get the block and inode bitmaps */
+    get_bitmaps();
+    if (!block_bmps || !inode_bmps) {
+        printf(BAD("Error getting bitmaps, exiting...\n"));
     }
 
     printf(INFO("Searching drive for important blocks...\n"));
@@ -434,7 +449,7 @@ int main (int argc, char **argv) {
         cur_percent = cx * 100 / nblocks;
 
         /* Skip blocks marked used */
-        if (search(used_blocks, n_used_blocks, cx)) {
+        if (is_block_used(cx)) {
             goto skip_tests;
         }
         /* Test for BMP header */
@@ -507,17 +522,15 @@ int main (int argc, char **argv) {
                     printf(BAD("Unable to reserve an inode, exiting...\n"));
                     cleanup(-1);
                 } else {
-                    printf(GOOD("Reserved inode 420!\n"));
                     target_inum = 420;
                 }
             } else {
-                printf(GOOD("Reserved inode 666!\n"));
                 target_inum = 666;
             }
         } else {
-            printf(GOOD("Reserved inode 6969!\n"));
             target_inum = 6969;
         }
+        printf(GOOD("Reserved inode %u!\n"), target_inum);
 
         printf(INFO("Populating inode %u...\n"), target_inum);
         /* Populate the inode with required fields */
@@ -528,6 +541,22 @@ int main (int argc, char **argv) {
         /* Populate direct blocks */
         for (cx2 = 0; cx2 < size_blocks && cx2 < 12; cx2++) {
             *(iblocks + cx2) = *(bmp_starts + cx) + cx2;
+            mark_used(*(bmp_starts + cx) + cx2, 0);
+        }
+        /* Populate 3x indirect blocks */
+        if (*(n_indirects + 2)) {
+            *(iblocks + TRI_IND) = *(indirects + 2);
+            mark_used(*(indirects + 2), 3);
+        }
+        /* Populate 2x indirect blocks */
+        if (*(n_indirects + 1)) {
+            *(iblocks + DBL_IND) = *(indirects + 1);
+            mark_used(*(indirects + 1), 2);
+        }
+        /* Populate 1x indirect blocks */
+        if (*(n_indirects + 0)) {
+            *(iblocks + SIN_IND) = *(indirects + 0);
+            mark_used(*(indirects + 0), 1);
         }
         i->i_extra_isize = 32;
         printf(INFO("Done!\n\n"));
