@@ -52,9 +52,9 @@ void usage () {
 }
 
 /* 
- * Cleanup tasks
+ * Cleanup tasks run on program exit
  */
-void cleanup (int exit_code) {
+void cleanup () {
     uint32_t cx;
 
     for (cx = 0; cx < 3; cx++) {
@@ -77,8 +77,6 @@ void cleanup (int exit_code) {
     if (devf >= 0) {
         close(devf);
     }
-
-    exit(exit_code);
 }
 
 /* 
@@ -89,13 +87,13 @@ void init (const char *fname) {
     devf = open(fname, O_RDWR);
     if (devf < 0) {
         printf(BAD("Unable to open: %s\n"), fname);
-        cleanup(-1);
+        exit(-1);
     }
     
     /* Get size of device */
     if (ioctl(devf, BLKGETSIZE, &dev_size) == -1) {
         printf(BAD("Unable to get size of device: %s\n"), fname);
-        cleanup(-1);
+        exit(-1);
     }
     /* ioctl call gives number 512 byte sectors */
     dev_size *= 512;
@@ -104,7 +102,7 @@ void init (const char *fname) {
     dev = mmap(0, dev_size, PROT_READ|PROT_WRITE, MAP_SHARED, devf, 0);
     if (dev == MAP_FAILED) {
         printf(BAD("Unable to mmap device: %s\n"), fname);
-        cleanup(-1);
+        exit(-1);
     }
 
     /* Calculate the number of blocks on the drive */
@@ -175,6 +173,83 @@ int search (uint32_t *list, size_t len, uint32_t b) {
 }
 
 /*
+ * Test if a block is used
+ * Return 1 if used, 0 otherwise
+ */
+int is_block_used (uint32_t block) {
+    uint32_t bgroup = block / BLOCKS_PER_GROUP;
+    uint32_t bindex = block % BLOCKS_PER_GROUP;
+    uint8_t *bmp = *(block_bmps + bgroup);
+
+    return BMP_BIT(bmp, bindex);
+}
+
+/*
+ * Sets the requested bit in the bitmap
+ */
+void set_bmp_bit (uint8_t *bmp, uint32_t bit) {
+    uint32_t byte_off;
+    uint32_t bit_off;
+    uint8_t value;
+
+    /* Calculate the byte and bit offsets */
+    byte_off = bit / 8;
+    bit_off = bit % 8;
+
+    /* Set the specified bit */
+    value = *(bmp + byte_off);
+    value = value | (0x01 << bit_off);
+    *(bmp + byte_off) = value;
+}
+
+/*
+ * Mark a block as used in the bitmap, handles indirects
+ */
+void mark_used (uint32_t block, uint32_t ind) {
+    uint32_t cx;
+    uint32_t bgroup = block / BLOCKS_PER_GROUP;
+    uint32_t bindex = block % BLOCKS_PER_GROUP;
+    uint8_t *bmp = *(block_bmps + bgroup);
+    uint32_t *blk;
+
+    /* Handle indirects */
+    if (ind) {
+        blk = (uint32_t*)(dev + BLOCK_OFF(block));
+        for (cx = 0; cx < BYTES_PER_BLOCK / sizeof(*blk); cx++) {
+            /* Only mark non-zero linked blocks */
+            if (*(blk + cx)) {
+                mark_used(*(blk + cx), ind - 1);
+            }
+        }
+    }
+    /* Mark directs and the indirect block itself */
+    set_bmp_bit(bmp, bindex);
+}
+
+/*
+ * Reserves an inode for the recovered file
+ * Returns 1 if success, 0 if fail
+ */
+int res_inode (uint32_t inum) {
+    uint32_t igroup = (inum - 1) / ipg;
+    uint32_t iindex = (inum - 1) % ipg;
+    uint32_t ioff = iindex * sb->s_inode_size;
+    uint8_t *bmp = *(inode_bmps + igroup);
+
+    /* Get the group descriptor */
+    gd = (struct gd_s*)(dev + GD_OFF(igroup));
+
+    /* Reserve the inode if it is free */
+    if (BMP_BIT(bmp, iindex) == 0) {
+        set_bmp_bit(bmp, iindex);
+        i = (struct inode_s*)(dev + BLOCK_OFF(gd->bg_inode_table_lo) + ioff);
+        return 1;
+    }
+
+    return 0;
+}
+
+/*
  * Go through every group and save the block and inode bitmaps
  */
 void get_bitmaps () {
@@ -203,18 +278,6 @@ void get_bitmaps () {
 }
 
 /*
- * Test if a block is used
- * Return 1 if used, 0 otherwise
- */
-int is_block_used (uint32_t block) {
-    uint32_t bgroup = block / BLOCKS_PER_GROUP;
-    uint32_t bindex = block % BLOCKS_PER_GROUP;
-    uint8_t *bmp = *(block_bmps + bgroup);
-
-    return BMP_BIT(bmp, bindex);
-}
-
-/*
  * Test if a block is a potential BMP start block
  * Return similar to memcmp(3)
  */
@@ -228,10 +291,11 @@ int cmp_bmp (uint32_t block) {
 }
 
 /*
- * Test if a block is a potential 1x indirect block
+ * Tests if a block is a valid indirect block
+ * Handles 1x, 2x, and 3x
  * Return 0 if potential indirect, nonzero if not
  */
-int cmp_ind_sin (uint32_t block) {
+int cmp_ind (uint32_t block, uint32_t ind) {
     int ret = 1;
     uint32_t cx;
     uint32_t cx2;
@@ -241,6 +305,7 @@ int cmp_ind_sin (uint32_t block) {
     /* Get the block as an array of block numbers */
     blk = (uint32_t*)(dev + BLOCK_OFF(block));
 
+    /* Handle the block itslef */
     /* Test for increment or until zeros */
     for (cx = 0; cx < BYTES_PER_BLOCK / sizeof(*blk); cx++) {
         /* Test for only zeros at the end */
@@ -254,7 +319,6 @@ int cmp_ind_sin (uint32_t block) {
 
         /* Test if listing ends on first of a set of 4 */
         if (cx % 4 == 0 && *(blk + cx) == 0) {
-
             /* Begin tracking zeros */
             zero = 1;
             continue;
@@ -288,32 +352,16 @@ int cmp_ind_sin (uint32_t block) {
         }
     }
 
-    return ret;
-}
-
-/*
- * Test if a block is a potential 2x indirect block
- * Return 0 if potential 2x indirect, nonzero if not
- */
-int cmp_ind_dbl (uint32_t block) {
-    int ret = 1;
-    uint32_t cx;
-    uint32_t *blk;
-
-    /* Get the block as an array of block numbers */
-    blk = (uint32_t*)(dev + BLOCK_OFF(block));
-
-    /* Test if the block is a potential indirect block */
-    ret = cmp_ind_sin(block);
-    if (!ret) {
-        /* Test if each listed block is an indirect block */
+    /* Handle multiple indirect */
+    if (!ret && ind) {
+        /* Test each listed block with one level of indirection less */
         for (cx = 0; !ret && cx < BYTES_PER_BLOCK / sizeof(*blk); cx++) {
             /* Skip if first listed block is zero */
             if (cx == 0 && *(blk + cx) == 0) {
                 continue;
             }
 
-            ret = ret || cmp_ind_sin(*(blk + cx));
+            ret = ret || cmp_ind(*(blk + cx), ind - 1);
         }
     }
 
@@ -321,130 +369,17 @@ int cmp_ind_dbl (uint32_t block) {
 }
 
 /*
- * Test if a block is a potential 3x indirect block
- * Return 0 if potential 3x indirect, nonzero if not
+ * Scan the drive for all BMP header blocks and indirect blocks
  */
-int cmp_ind_tri (uint32_t block) {
-    int ret = 1;
+void scan () {
     uint32_t cx;
-    uint32_t *blk;
+    int cx2;
+    uint32_t percent;
+    uint32_t cur_percent;
 
-    /* Get the block as an array of block numbers */
-    blk = (uint32_t*)(dev + BLOCK_OFF(block));
-
-    /* Test if the block is a potential indirect block */
-    ret = cmp_ind_sin(block);
-    if (!ret) {
-        /* Test if each listed block is a 2x indirect block */
-        for (cx = 0; !ret && cx < BYTES_PER_BLOCK / sizeof(*blk); cx++) {
-            /* Skip if first listed block is zero */
-            if (cx == 0 && *(blk + cx) == 0) {
-                continue;
-            }
-
-            ret = ret || cmp_ind_dbl(*(blk + cx));
-        }
-    }
-
-    return ret;
-}
-
-/*
- * Sets the requested bit in the bitmap
- */
-void set_bmp_bit (uint8_t *bmp, uint32_t bit) {
-    uint32_t byte_off;
-    uint32_t bit_off;
-    uint8_t value;
-
-    /* Calculate the byte and bit offsets */
-    byte_off = bit / 8;
-    bit_off = bit % 8;
-
-    /* Set the specified bit */
-    value = *(bmp + byte_off);
-    value = value | (0x01 << bit_off);
-    *(bmp + byte_off) = value;
-}
-
-/*
- * Reserves an inode for the recovered file
- * Returns 1 if success, 0 if fail
- */
-int res_inode (uint32_t inum) {
-    uint32_t igroup = (inum - 1) / ipg;
-    uint32_t iindex = (inum - 1) % ipg;
-    uint32_t ioff = iindex * sb->s_inode_size;
-    uint8_t *bmp = *(inode_bmps + igroup);
-
-    /* Get the group descriptor */
-    gd = (struct gd_s*)(dev + GD_OFF(igroup));
-
-    /* Reserve the inode if it is free */
-    if (BMP_BIT(bmp, iindex) == 0) {
-        set_bmp_bit(bmp, iindex);
-        i = (struct inode_s*)(dev + BLOCK_OFF(gd->bg_inode_table_lo) + ioff);
-        return 1;
-    }
-
-    return 0;
-}
-
-/*
- * Mark a block as used in the bitmap, handles indirects
- */
-void mark_used (uint32_t block, uint32_t ind) {
-    uint32_t cx;
-    uint32_t bgroup = block / BLOCKS_PER_GROUP;
-    uint32_t bindex = block % BLOCKS_PER_GROUP;
-    uint8_t *bmp = *(block_bmps + bgroup);
-    uint32_t *blk;
-
-    /* Handle indirects */
-    if (ind) {
-        blk = (uint32_t*)(dev + BLOCK_OFF(block));
-        for (cx = 0; cx < BYTES_PER_BLOCK / sizeof(*blk); cx++) {
-            /* Only mark non-zero linked blocks */
-            if (*(blk + cx)) {
-                mark_used(*(blk + cx), ind - 1);
-            }
-        }
-    }
-    /* Mark directs and the indirect block itself */
-    set_bmp_bit(bmp, bindex);
-}
-
-int main (int argc, char **argv) {
-    uint32_t cx;
-    uint32_t cx2;
-    size_t percent = 0;
-    size_t cur_percent;
-
-    /* Test args */
-    if (argc != 2) {
-        usage();
-
-        exit(-1);
-    }
-
-    /* Test if running as root */
-    if (getuid()) {
-        usage();
-
-        exit(-1);
-    }
-
-    /* Initialize */
-    init(*(argv + 1));
-
-    /* Get the block and inode bitmaps */
-    get_bitmaps();
-    if (!block_bmps || !inode_bmps) {
-        printf(BAD("Error getting bitmaps, exiting...\n"));
-    }
-
-    printf(INFO("Searching drive for important blocks...\n"));
-    /* Parse the drive for important blocks */
+    /* Scan the drive for important blocks */
+    printf(INFO("Scanning drive for important blocks...\n"));
+    percent = 0;
     for (cx = 0; cx < nblocks; cx++) {
         cur_percent = cx * 100 / nblocks;
 
@@ -460,43 +395,67 @@ int main (int argc, char **argv) {
                 n_bmp_starts * sizeof(*bmp_starts));
             *(bmp_starts + (n_bmp_starts - 1)) = cx;
         }
-        /* Test for 3x indirect block */
-        else if (!cmp_ind_tri(cx)) {
-            printf(GOOD("Found potential 3x indirect at block %u!\n"), cx);
-            *(n_indirects + 2) += 1;
-            *(indirects + 2) = realloc(*(indirects + 2),
-                *(n_indirects + 2) * sizeof(**(indirects + 2)));
-            *(*(indirects + 2) + *(n_indirects + 2) - 1) = cx;
-        }
-        /* Test for 2x indirect block */
-        else if (!cmp_ind_dbl(cx)) {
-            printf(GOOD("Found potential 2x indirect at block %u!\n"), cx);
-            *(n_indirects + 1) += 1;
-            *(indirects + 1) = realloc(*(indirects + 1),
-                *(n_indirects + 1) * sizeof(**(indirects + 1)));
-            *(*(indirects + 1) + *(n_indirects + 1) - 1) = cx;
-        }
-        /* Test for 1x indirect block */
-        else if (!cmp_ind_sin(cx)) {
-            printf(GOOD("Found potential 1x indirect at block %u!\n"), cx);
-            *n_indirects += 1;
-            *indirects = realloc(*indirects,
-                *n_indirects * sizeof(**indirects));
-            *(*indirects + *n_indirects - 1) = cx;
+        /* Test for indirect block */
+        else {
+            /* Start at 3x, go down to 1x */
+            for (cx2 = 2; cx2 >= 0; cx2--) {
+                if (!cmp_ind(cx, cx2)) {
+                    printf(GOOD("Found potential %ux indirect at block %u!\n"),
+                        cx2 + 1, cx);
+                    *(n_indirects + cx2) += 1;
+                    *(indirects + cx2) = realloc(*(indirects + cx2),
+                        *(n_indirects + cx2) * sizeof(**(indirects + cx2)));
+                    *(*(indirects + cx2) + *(n_indirects + cx2) - 1) = cx;
+                }
+            }
         }
     skip_tests:
         /* Log percentage through disk */
         if (cur_percent % 10 == 0 && cur_percent != percent) {
             percent += 10;
-            printf(INFO("%lu%% complete...\n"), percent);
+            printf(INFO("%u%% complete...\n"), percent);
         }
     }
     printf(INFO("Done!\n\n"));
+}
 
-    /* Exit if no potential BMP starting blocks found */
+int main (int argc, char **argv) {
+    uint32_t cx;
+    uint32_t cx2;
+
+    /* Register the exit handler */
+    if (atexit(cleanup)) {
+        printf(BAD("Unable to register the exit handler!\n"));
+        exit(-1);
+    }
+
+    /* Test args */
+    if (argc != 2) {
+        usage();
+        exit(-1);
+    }
+
+    /* Test if running as root */
+    if (getuid()) {
+        usage();
+        exit(-1);
+    }
+
+    /* Initialize */
+    init(*(argv + 1));
+
+    /* Get the block and inode bitmaps */
+    get_bitmaps();
+    if (!block_bmps || !inode_bmps) {
+        printf(BAD("Error getting bitmaps, exiting...\n"));
+        exit(-1);
+    }
+
+    /* Scan the drive */
+    scan();
     if (!bmp_starts) {
         printf(BAD("No potential BMP start blocks found, exiting...\n"));
-        cleanup(-1);
+        exit(-1);
     }
 
     /* Create entries for the files */
@@ -520,7 +479,7 @@ int main (int argc, char **argv) {
                 /* Try to reserve inode 420 */
                 if (!res_inode(420)) {
                     printf(BAD("Unable to reserve an inode, exiting...\n"));
-                    cleanup(-1);
+                    exit(-1);
                 } else {
                     target_inum = 420;
                 }
@@ -574,7 +533,6 @@ int main (int argc, char **argv) {
         printf(INFO("Linking inode %u to root directory...\n"), target_inum);
         memset(target_name, 0, sizeof(target_name));
         sprintf(target_name, "recovered_%03u.bmp", cx);
-        printf(INFO("File name: %s\n"), target_name);
         /* Link to root */
         de = (struct dir_ent_s*)root_block;
         for (;;) {
@@ -622,15 +580,13 @@ int main (int argc, char **argv) {
         }
         if (entered) {
             printf(INFO("Done!\n\n"));
+            printf(GOOD("File name: %s\n"), target_name);
         } else {
             printf(BAD("Failed to link, exiting...\n"));
-            cleanup(-1);
+            exit(-1);
         }
     }
 
     /* Cleanup and exit */
-    cleanup(0);
-
-    /* Never actually gets here */
-    return 0;
+    exit(0);
 }
