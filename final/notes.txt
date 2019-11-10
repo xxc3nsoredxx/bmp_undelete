@@ -1,6 +1,5 @@
 * Distinguish between blocks marked free and blocks marked used
 * Find potential BMP start blocks that are marked free
-    a. Get the file sizes
 * Find potential indirect blocks that are marked free
     a. Differentiate between first, second, and third indirects
     b. Determine the proper order
@@ -9,9 +8,11 @@
 * Link to root directory
 
 Block bitmap structure
+Byte number:    (block - group initial block) / 8
+Bit number:     (block - group initial block) % 8
 Bit:    7654 3210  7654 3210
-0x0000: 0000 0000  0000 0000            Byte number:    (block - group) / 8
-0x0002: |||| ||||  |||| ||||            Bit number:     (block - group) % 8
+0x0000: 0000 0000  0000 0000
+0x0002: |||| ||||  |||| ||||
         |||| ||||  |||| |||+ block 8
         |||| ||||  |||| ||+- block 9
         |||| ||||  |||| |+-- block 10
