@@ -228,8 +228,10 @@ void set_bmp_bit (uint8_t *bmp, uint32_t bit) {
 
 /*
  * Mark a block as used in the bitmap, handles indirects
+ * Returns the last direct block that was marked
  */
-void mark_used (uint32_t block, uint32_t ind) {
+uint32_t mark_used (uint32_t block, uint32_t ind) {
+    uint32_t ret;
     uint32_t cx;
     uint32_t bgroup = block / BLOCKS_PER_GROUP;
     uint32_t bindex = block % BLOCKS_PER_GROUP;
@@ -242,12 +244,18 @@ void mark_used (uint32_t block, uint32_t ind) {
         for (cx = 0; cx < BYTES_PER_BLOCK / sizeof(*blk); cx++) {
             /* Only mark non-zero linked blocks */
             if (*(blk + cx)) {
-                mark_used(*(blk + cx), ind - 1);
+                ret = mark_used(*(blk + cx), ind - 1);
             }
         }
     }
+
     /* Mark directs and the indirect block itself */
     set_bmp_bit(bmp, bindex);
+    if (!ind) {
+        ret = block;
+    }
+
+    return ret;
 }
 
 /*
@@ -346,7 +354,7 @@ int cmp_ind (uint32_t block, uint32_t ind) {
         }
     }
 
-    /* Handle multiple indirect */
+    /* Handle indirect */
     if (!ret && ind) {
         /* Test each listed block with one level of indirection less */
         for (cx = 0; !ret && cx < BYTES_PER_BLOCK / sizeof(*blk); cx++) {
@@ -414,12 +422,42 @@ void scan () {
 }
 
 /*
+ * Finds the indirect block that goes on from the last block
+ */
+uint32_t find_next_ind (uint32_t last, uint32_t ind) {
+    uint32_t cx;
+    uint32_t bnum;
+    uint32_t *blk = 0;
+
+    /* On a 1x indirect block */
+    if (ind == 0) {
+        for (cx = 0; cx < *(n_indirects + 0); cx++) {
+            bnum = *(*(indirects + 0) + cx);
+
+            /* Skip used blocks */
+            if (!is_block_used(bnum)) {
+                blk = (uint32_t*)(dev + BLOCK_OFF(bnum));
+
+                /* Test if it starts off after last */
+                if (*blk == last + 1) {
+                    return bnum;
+                }
+            }
+        }
+    }
+
+    return 0;
+}
+
+/*
  * Links the inode to the root directory
  */
 void link (uint32_t file) {
     struct inode_s *root = 0;
     uint32_t root_bnum = 0;
     uint8_t *root_block = 0;
+    uint16_t new_rec_len;
+    uint16_t real_rec_len;
     struct dir_ent_s *de = 0;
     int entered = 0;
 
@@ -436,12 +474,12 @@ void link (uint32_t file) {
     sprintf(target_name, "recovered_%03u.bmp", file);
     de = (struct dir_ent_s*)root_block;
     for (;;) {
-        uint16_t new_rec_len = sizeof(de->inode) +
+        new_rec_len = sizeof(de->inode) +
             sizeof(de->rec_len) +
             sizeof(de->name_len) +
             sizeof(de->file_type) +
             strlen(target_name);
-        uint16_t real_rec_len = sizeof(de->inode) +
+        real_rec_len = sizeof(de->inode) +
             sizeof(de->rec_len) +
             sizeof(de->name_len) +
             sizeof(de->file_type) +
@@ -515,7 +553,7 @@ int main (int argc, char **argv) {
     /* Get information about each group */
     get_group_info();
     if (!gd || !block_bmps || !inode_bmps) {
-        printf(BAD("Error getting bitmaps, exiting...\n"));
+        printf(BAD("Error getting group information, exiting...\n"));
         exit(-1);
     }
 
@@ -533,6 +571,8 @@ int main (int argc, char **argv) {
         uint32_t size = bmp_head->bmp_file_size;
         uint32_t size_blocks = size / BYTES_PER_BLOCK;
         uint32_t *iblocks;
+        uint32_t bnum;
+        uint32_t last;
 
         /* Ensure that overflow is accounted for */
         size_blocks += (size % BYTES_PER_BLOCK) ? 1 : 0;
@@ -564,34 +604,21 @@ int main (int argc, char **argv) {
         iblocks = (uint32_t*)(i->i_block);
         /* Populate direct blocks */
         for (cx2 = 0; cx2 < size_blocks && cx2 < 12; cx2++) {
-            *(iblocks + cx2) = *(bmp_starts + cx) + cx2;
-            mark_used(*(bmp_starts + cx) + cx2, 0);
+            bnum = *(bmp_starts + cx) + cx2;
+            *(iblocks + cx2) = bnum;
+            last = mark_used(bnum, 0);
         }
-        /* Populate 1x indirect block */
-        if (*(n_indirects + 0)) {
-            /* Find the indirect block that has the next block */
-            for (cx2 = 0; cx2 < *(n_indirects + 0); cx2++) {
-                uint32_t *blk = (uint32_t*)
-                    (dev + BLOCK_OFF(*(*(indirects + 0) + cx2)));
-                if (*blk == *(iblocks + 11) + 1) {
-                    *(iblocks + SIN_IND) = *(*(indirects + 0) + cx2);
-                    mark_used(*(*(indirects + 0) + cx2), 1);
-                    break;
+        /* Populate indirect blocks */
+        for (cx2 = 0; cx2 < 3; cx2++) {
+            if (*(n_indirects + cx2)) {
+                /* Find the indirect block that has the next block */
+                bnum = find_next_ind(last, cx2);
+                if (bnum) {
+                    *(iblocks + SIN_IND + cx2) = bnum;
+                    last = mark_used(bnum, cx2 + 1);
                 }
             }
         }
-        /*
-        Populate 2x indirect block
-        if (*(n_indirects + 1)) {
-            *(iblocks + DBL_IND) = *(indirects + 1);
-            mark_used(*(indirects + 1), 2);
-        }
-        Populate 3x indirect block
-        if (*(n_indirects + 2)) {
-            *(iblocks + TRI_IND) = *(indirects + 2);
-            mark_used(*(indirects + 2), 3);
-        }
-        */
         i->i_extra_isize = 32;
         printf(INFO("Done!\n\n"));
 
