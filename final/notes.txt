@@ -5,6 +5,7 @@
     b. Determine the proper order
 * Find free inode (priority on 6969, 666, 420)
 * Populate inode with metadata
+* Mark blocks of file as used
 * Link to root directory
 
 test_mandelbrot.bmp (inode 14):

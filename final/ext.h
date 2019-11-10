@@ -7,10 +7,16 @@
 #define BLOCKS_PER_GROUP    (8 * BYTES_PER_BLOCK)
 #define BYTES_PER_GROUP     (BLOCKS_PER_GROUP * BYTES_PER_BLOCK)
 #define SB_OFF              (1024)
+#define ROOT_INODE          (2)
 #define GD_OFF(G)           (BYTES_PER_BLOCK + ((G) * sizeof(struct gd_s)))
 #define BLOCK_OFF(B)        ((B) * BYTES_PER_BLOCK)
 #define BMP_BIT(BM, B)      (((*((BM) + ((B) / 8)) & 0xFF) >> \
                             ((B) % 8)) & 0x01)
+#define MODE_007            ((0x04 | 0x02 | 0x01) & 0x07)
+#define MODE_070            ((0x20 | 0x10 | 0x08) & 0x38)
+#define MODE_700            ((0x0100 | 0x0080 | 0x0040) & 0x01C0)
+#define MODE_777            (MODE_007 | MODE_070 | MODE_700)
+#define TYPE_REG            (0x8000)
 
 struct sb_s {
     uint32_t s_inodes_count;
@@ -179,7 +185,8 @@ struct inode_s {
 struct dir_ent_s {
     uint32_t inode;
     uint16_t rec_len;
-    uint16_t name_len;
+    uint8_t  name_len;
+    uint8_t  file_type;
     char     name[255];
 } __attribute__((packed));
 
