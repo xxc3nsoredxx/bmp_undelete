@@ -42,7 +42,6 @@ size_t n_indirects [3] = {
 };
 struct inode_s *i = 0;
 char target_name [100];
-uint32_t target_inum = 0;
 
 void usage () {
     printf("Usage: ./recover [device]\n");
@@ -201,9 +200,18 @@ void get_group_info () {
  * Return 1 if used, 0 otherwise
  */
 int is_block_used (uint32_t block) {
-    uint32_t bgroup = block / BLOCKS_PER_GROUP;
-    uint32_t bindex = block % BLOCKS_PER_GROUP;
-    uint8_t *bmp = *(block_bmps + bgroup);
+    uint32_t bgroup;
+    uint32_t bindex;
+    uint8_t *bmp;
+
+    /* Test for out of bounds */
+    if (block >= nblocks) {
+        return 0;
+    }
+
+    bgroup = block / BLOCKS_PER_GROUP;
+    bindex = block % BLOCKS_PER_GROUP;
+    bmp = *(block_bmps + bgroup);
 
     return BMP_BIT(bmp, bindex);
 }
@@ -238,31 +246,29 @@ uint32_t mark_used (uint32_t block, uint32_t ind) {
     uint8_t *bmp = *(block_bmps + bgroup);
     uint32_t *blk;
 
-    /* Handle indirects */
-    if (ind) {
-        blk = (uint32_t*)(dev + BLOCK_OFF(block));
-        for (cx = 0; cx < BYTES_PER_BLOCK / sizeof(*blk); cx++) {
-            /* Only mark non-zero linked blocks */
-            if (*(blk + cx)) {
-                ret = mark_used(*(blk + cx), ind - 1);
-            }
-        }
+    /* Mark the block, return if direct block */
+    set_bmp_bit(bmp, bindex);
+    if (ind == 0) {
+        return block;
     }
 
-    /* Mark directs and the indirect block itself */
-    set_bmp_bit(bmp, bindex);
-    if (!ind) {
-        ret = block;
+    /* Handle indirects */
+    blk = (uint32_t*)(dev + BLOCK_OFF(block));
+    for (cx = 0; cx < BYTES_PER_BLOCK / sizeof(*blk); cx++) {
+        /* Only mark non-zero linked blocks */
+        if (*(blk + cx) != 0) {
+            ret = mark_used(*(blk + cx), ind - 1);
+        }
     }
 
     return ret;
 }
 
 /*
- * Reserves an inode for the recovered file
- * Returns 1 if success, 0 if fail
+ * Actually does the attempt at reserving
+ * Returns inode number if success, 0 if fail
  */
-int res_inode (uint32_t inum) {
+uint32_t res_ino_helper (uint32_t inum) {
     uint32_t igroup = (inum - 1) / ipg;
     uint32_t iindex = (inum - 1) % ipg;
     uint32_t ioff = iindex * sb->s_inode_size;
@@ -273,10 +279,36 @@ int res_inode (uint32_t inum) {
         set_bmp_bit(bmp, iindex);
         i = (struct inode_s*)(dev +
             BLOCK_OFF((*(gd + igroup))->bg_inode_table_lo) + ioff);
-        return 1;
+        return inum;
     }
 
     return 0;
+}
+
+/*
+ * Reserves an inode for the recovered file
+ * Priority on 6969, 666, 420, then first available
+ * Returns inode number if success, 0 if fail
+ */
+uint32_t res_ino () {
+    uint32_t ret;
+    uint32_t cx;
+
+    /* Attempt the priority inodes */
+    ret = res_ino_helper(6969);
+    if (!ret) {
+        ret = res_ino_helper(666);
+    }
+    if (!ret) {
+        ret = res_ino_helper(420);
+    }
+
+    /* Get the first available inode if the above fail */
+    for (cx = sb->s_first_ino + 1; !ret && cx < sb->s_inodes_count; cx++) {
+        ret = res_ino_helper(cx);
+    }
+
+    return ret;
 }
 
 /*
@@ -285,6 +317,11 @@ int res_inode (uint32_t inum) {
  */
 int cmp_bmp (uint32_t block) {
     struct bmp_head_s *header;
+
+    /* Test out of bounds */
+    if (block >= nblocks) {
+        return 1;
+    }
 
     /* Get the block as a BMP file header */
     header = (struct bmp_head_s*)(dev + BLOCK_OFF(block));
@@ -298,72 +335,99 @@ int cmp_bmp (uint32_t block) {
  * Return 0 if potential indirect, nonzero if not
  */
 int cmp_ind (uint32_t block, uint32_t ind) {
-    int ret = 1;
+    int ret = 0;
     uint32_t cx;
     uint32_t cx2;
     uint32_t *blk;
     int zero = 0;
 
+    /* Test out of bounds */
+    if (block >= nblocks) {
+        return 1;
+    }
+
     /* Get the block as an array of block numbers */
     blk = (uint32_t*)(dev + BLOCK_OFF(block));
 
-    /* Handle the block itslef */
-    /* Test for increment or until zeros */
-    for (cx = 0; cx < BYTES_PER_BLOCK / sizeof(*blk); cx++) {
-        /* Test for only zeros at the end */
-        if (zero) {
-            if (*(blk + cx) != 0) {
-                ret = 1;
-                break;
-            }
-            continue;
-        }
-
-        /* Test if listing ends on first of a set of 4 */
-        if (cx % 4 == 0 && *(blk + cx) == 0) {
-            /* Begin tracking zeros */
-            zero = 1;
-            continue;
-        }
-
-        /* Test if chunks of 4 are consecutive or zero found */
-        for (cx2 = 1; cx2 < 4; cx2++) {
-            /* Test if next is zero */
-            if (*(blk + (cx + cx2)) == 0) {
-                ret = 0;
-                zero = 1;
-                cx += cx2;
-                break;
-            }
-
-            /* Test if next is cur + 1 */
-            if (*(blk + (cx + cx2)) == *(blk + (cx + cx2 - 1)) + 1) {
-                ret = 0;
-            } else {
-                ret = 1;
-                break;
-            }
-        }
-        if (zero && !ret) {
-            continue;
-        } else if (ret) {
-            break;
-        } else {
-            /* No end cases found, continue to next group of 4 */
-            cx += 3;
-        }
-    }
-
-    /* Handle indirect */
-    if (!ret && ind) {
-        /* Test each listed block with one level of indirection less */
-        for (cx = 0; !ret && cx < BYTES_PER_BLOCK / sizeof(*blk); cx++) {
-            /* Skip if first listed block is zero */
-            if (cx == 0 && *(blk + cx) == 0) {
+    /* Handle 1x indirect */
+    if (ind == 0) {
+        /* Test for increment or until zeros */
+        for (cx = 0; cx < BYTES_PER_BLOCK / sizeof(*blk); cx++) {
+            /* Test for only zeros at the end */
+            if (zero) {
+                if (*(blk + cx) != 0) {
+                    ret = 1;
+                    break;
+                }
                 continue;
             }
 
-            ret = ret || cmp_ind(*(blk + cx), ind - 1);
+            /* Test if listing ends on first of a set of 4 */
+            if (cx % 4 == 0 && *(blk + cx) == 0) {
+                /* Begin tracking zeros unless very first entry */
+                if (cx != 0) {
+                    zero = 1;
+                    continue;
+                } else {
+                    ret = 1;
+                    break;
+                }
+            }
+
+            /* Test if chunks of 4 are consecutive or zero found */
+            for (cx2 = 1; cx2 < 4; cx2++) {
+                /* Test if next is zero */
+                if (*(blk + (cx + cx2)) == 0) {
+                    ret = 0;
+                    zero = 1;
+                    cx += cx2;
+                    break;
+                }
+
+                /* Test if next is cur + 1 */
+                if (*(blk + (cx + cx2)) == *(blk + (cx + cx2 - 1)) + 1) {
+                    ret = 0;
+                } else {
+                    ret = 1;
+                    break;
+                }
+            }
+            if (zero && !ret) {
+                continue;
+            } else if (ret) {
+                return ret;
+            } else {
+                /* No end cases found, continue to next group of 4 */
+                cx += 3;
+            }
+        }
+    }
+
+    /* Handle 2x and 3x indirect */
+    else if (ind == 1 || ind == 2) {
+        /* Test each listed block with one level of indirection less */
+        for (cx = 0; !ret && cx < BYTES_PER_BLOCK / sizeof(*blk); cx++) {
+            /* Skip if first listed block is zero */
+            if (cx == 0 && *blk == 0) {
+                /* If first two are zero, invalid */
+                if (*(blk + 1) == 0) {
+                    return 1;
+                }
+                continue;
+            }
+            /* If nonzero in zero streak, invalid */
+            else if (zero && *(blk + cx) != 0) {
+                return 1;
+            }
+            /* Non-zero streak */
+            else if (*(blk + cx) != 0) {
+                ret = ret || cmp_ind(*(blk + cx), ind - 1);
+            }
+            /* Zero spotted */
+            else {
+                zero = 1;
+                continue;
+            }
         }
     }
 
@@ -389,27 +453,26 @@ void scan () {
         if (is_block_used(cx)) {
             goto skip_tests;
         }
+        /* Test for indirect block */
+        /* Start at 3x, go down to 1x */
+        for (cx2 = 2; cx2 >= 0; cx2--) {
+            if (!cmp_ind(cx, cx2)) {
+                printf(GOOD("Found potential %ux indirect at block %u!\n"),
+                    cx2 + 1, cx);
+                *(n_indirects + cx2) += 1;
+                *(indirects + cx2) = realloc(*(indirects + cx2),
+                    *(n_indirects + cx2) * sizeof(**(indirects + cx2)));
+                *(*(indirects + cx2) + *(n_indirects + cx2) - 1) = cx;
+                goto skip_tests;
+            }
+        }
         /* Test for BMP header */
-        else if (!cmp_bmp(cx)) {
+        if (!cmp_bmp(cx)) {
             printf(GOOD("Found potential BMP header at block %u!\n"), cx);
             n_bmp_starts++;
             bmp_starts = realloc(bmp_starts,
                 n_bmp_starts * sizeof(*bmp_starts));
             *(bmp_starts + (n_bmp_starts - 1)) = cx;
-        }
-        /* Test for indirect block */
-        else {
-            /* Start at 3x, go down to 1x */
-            for (cx2 = 2; cx2 >= 0; cx2--) {
-                if (!cmp_ind(cx, cx2)) {
-                    printf(GOOD("Found potential %ux indirect at block %u!\n"),
-                        cx2 + 1, cx);
-                    *(n_indirects + cx2) += 1;
-                    *(indirects + cx2) = realloc(*(indirects + cx2),
-                        *(n_indirects + cx2) * sizeof(**(indirects + cx2)));
-                    *(*(indirects + cx2) + *(n_indirects + cx2) - 1) = cx;
-                }
-            }
         }
     skip_tests:
         /* Log percentage through disk */
@@ -423,23 +486,32 @@ void scan () {
 
 /*
  * Finds the indirect block that goes on from the last block
+ * Return the block number if found, zero otherwise
  */
 uint32_t find_next_ind (uint32_t last, uint32_t ind) {
     uint32_t cx;
     uint32_t bnum;
     uint32_t *blk = 0;
 
-    /* On a 1x indirect block */
-    if (ind == 0) {
-        for (cx = 0; cx < *(n_indirects + 0); cx++) {
-            bnum = *(*(indirects + 0) + cx);
+    /* Loop through all the indirects of a given type */
+    for (cx = 0; cx < *(n_indirects + ind); cx++) {
+        bnum = *(*(indirects + ind) + cx);
 
-            /* Skip used blocks */
-            if (!is_block_used(bnum)) {
-                blk = (uint32_t*)(dev + BLOCK_OFF(bnum));
+        /* Skip used blocks */
+        if (!is_block_used(bnum)) {
+            blk = (uint32_t*)(dev + BLOCK_OFF(bnum));
 
-                /* Test if it starts off after last */
-                if (*blk == last + 1) {
+            /* 1x indirect, test if it starts after last block */
+            if (ind == 0 && *blk == last + 1) {
+                return bnum;
+            }
+            /* 2x and 3x indirect, test first listed block */
+            else if (ind == 1 || ind == 2) {
+                /* Ignore first listed if zero */
+                if (*blk == 0) {
+                    blk++;
+                }
+                if (find_next_ind(last, ind - 1) == *blk) {
                     return bnum;
                 }
             }
@@ -450,9 +522,10 @@ uint32_t find_next_ind (uint32_t last, uint32_t ind) {
 }
 
 /*
- * Links the inode to the root directory
+ * Links the given inode to the root directory
+ * file_num is the running count of recovered files
  */
-void link (uint32_t file) {
+void link (uint32_t file_num, uint32_t target_inum) {
     struct inode_s *root = 0;
     uint32_t root_bnum = 0;
     uint8_t *root_block = 0;
@@ -471,7 +544,7 @@ void link (uint32_t file) {
     /* Link to root */
     printf(INFO("Linking inode %u to root directory...\n"), target_inum);
     memset(target_name, 0, sizeof(target_name));
-    sprintf(target_name, "recovered_%03u.bmp", file);
+    sprintf(target_name, "recovered_%03u.bmp", file_num);
     de = (struct dir_ent_s*)root_block;
     for (;;) {
         new_rec_len = sizeof(de->inode) +
@@ -570,34 +643,28 @@ int main (int argc, char **argv) {
             BLOCK_OFF(*(bmp_starts + cx)));
         uint32_t size = bmp_head->bmp_file_size;
         uint32_t size_blocks = size / BYTES_PER_BLOCK;
+        uint32_t inum;
         uint32_t *iblocks;
         uint32_t bnum;
         uint32_t last;
 
+        /* Skip used blocks */
+        if (is_block_used(*(bmp_starts + cx))) {
+            continue;
+        }
+
         /* Ensure that overflow is accounted for */
         size_blocks += (size % BYTES_PER_BLOCK) ? 1 : 0;
 
-        /* Try to reserve inode 6969 */
-        if (!res_inode(6969)) {
-            /* Try to reserve inode 666 */
-            if (!res_inode(666)) {
-                /* Try to reserve inode 420 */
-                if (!res_inode(420)) {
-                    printf(BAD("Unable to reserve an inode, exiting...\n"));
-                    exit(-1);
-                } else {
-                    target_inum = 420;
-                }
-            } else {
-                target_inum = 666;
-            }
-        } else {
-            target_inum = 6969;
+        /* Try to reserve an inode*/
+        if (!(inum = res_ino())) {
+            printf(BAD("Unable to reserve an inode, exiting...\n"));
+            exit(-1);
         }
-        printf(GOOD("Reserved inode %u!\n"), target_inum);
+        printf(GOOD("Reserved inode %u!\n"), inum);
 
         /* Populate the inode with required fields */
-        printf(INFO("Populating inode %u...\n"), target_inum);
+        printf(INFO("Populating inode %u...\n"), inum);
         i->i_mode = MODE_777 | TYPE_REG;
         i->i_size_lo = size;
         i->i_links_count = 1;
@@ -605,17 +672,20 @@ int main (int argc, char **argv) {
         /* Populate direct blocks */
         for (cx2 = 0; cx2 < size_blocks && cx2 < 12; cx2++) {
             bnum = *(bmp_starts + cx) + cx2;
+            printf(GOOD("Direct %u: %u\n"), cx2, bnum);
             *(iblocks + cx2) = bnum;
             last = mark_used(bnum, 0);
         }
         /* Populate indirect blocks */
         for (cx2 = 0; cx2 < 3; cx2++) {
-            if (*(n_indirects + cx2)) {
+            if (*(n_indirects + cx2) > 0) {
                 /* Find the indirect block that has the next block */
                 bnum = find_next_ind(last, cx2);
-                if (bnum) {
+                if (bnum != 0) {
                     *(iblocks + SIN_IND + cx2) = bnum;
+                    printf(GOOD("%ux Indirect: %u\n"), cx2 + 1, bnum);
                     last = mark_used(bnum, cx2 + 1);
+                    continue;
                 }
             }
         }
@@ -623,7 +693,7 @@ int main (int argc, char **argv) {
         printf(INFO("Done!\n\n"));
 
         /* Link the inode to the root directory */
-        link(cx);
+        link(cx, inum);
     }
 
     exit(0);

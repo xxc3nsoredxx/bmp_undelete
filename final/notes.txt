@@ -8,6 +8,19 @@
 * Mark blocks of file as used
 * Link to root directory
 
+test_large.bmp (inode 15):
+    First direct block: 18432
+    Last direct block: 18443
+    1x indirect: 17345
+        First direct: 18444
+        Last direct: 20491
+    2x indirect: 17537
+        First 1x: 17346
+            First direct: 20492
+            Last direct: 20974
+        Last 1x: 17346
+    3x indirect: n/a
+
 test_mandelbrot.bmp (inode 14):
     Size (given in inode): 720054
     Size (given in header): 720055
@@ -17,6 +30,8 @@ test_mandelbrot.bmp (inode 14):
         begins with block 17437
     2x indirect: n/a
     3x indirect: n/a
+
+test_large.bmp (inode )
 
 Block bitmap structure:
 Byte number:    (block - group initial block) / 8
