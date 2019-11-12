@@ -37,6 +37,14 @@ struct inode_s *i = 0;
 uint32_t n_rec = 0;
 char target_name [100];
 
+/* Can be used by the client to access filesystem info */
+struct fs_info_s fs_info = {
+    &nblocks,
+    &ngroups,
+    &ipg,
+    &ipb
+};
+
 /* 
  * Private method
  * Cleanup tasks run on program exit
@@ -44,7 +52,7 @@ char target_name [100];
 void cleanup () {
     uint32_t cx;
 
-    status(INFO, "Cleaning up junk\n");
+    status(CLEANUP);
 
     for (cx = 0; cx < 3; cx++) {
         if ((indirects + cx)) {
@@ -84,9 +92,9 @@ void get_group_info () {
     inode_bmps = calloc(ngroups, sizeof(*inode_bmps));
 
     /* Parse the drive group by group */
-    status(INFO, "Saving information about group:");
+    status(GROUP_INFO);
     for (cx = 0; cx < ngroups; cx++) {
-        printf(" %u", cx);
+        status(GROUP_PROG, cx);
 
         /* Get the group descriptor */
         *(gd + cx) = (struct gd_s*)(dev + GD_OFF(cx));
@@ -97,8 +105,7 @@ void get_group_info () {
         *(inode_bmps + cx) = (uint8_t*)
             (dev + BLOCK_OFF((*(gd + cx))->bg_inode_bitmap_lo));
     }
-    printf("\n");
-    status(INFO, "Done!\n\n");
+    status(DONE);
 }
 
 /*
@@ -387,9 +394,54 @@ int cmp_ind (uint32_t block, uint32_t ind) {
 
 /*
  * Private method
+ * Populates the inode starting with the given block
+ */
+void populate (uint32_t inum, uint32_t start) {
+    uint32_t cx;
+    struct bmp_head_s *bmp_head = (struct bmp_head_s*)
+        (dev + BLOCK_OFF(start));
+    uint32_t size = bmp_head->bmp_file_size;
+    uint32_t size_blocks = size / BYTES_PER_BLOCK;
+    uint32_t *iblocks;
+    uint32_t bnum;
+    uint32_t last;
+
+    /* Ensure that overflow is accounted for */
+    size_blocks += (size % BYTES_PER_BLOCK) ? 1 : 0;
+
+    status(POP, inum);
+    i->i_mode = MODE_777 | TYPE_REG;
+    i->i_size_lo = size;
+    i->i_links_count = 1;
+    iblocks = (uint32_t*)(i->i_block);
+    /* Populate direct blocks */
+    for (cx = 0; cx < size_blocks && cx < 12; cx++) {
+        bnum = start + cx;
+        *(iblocks + cx) = bnum;
+        last = mark_used(bnum, 0);
+    }
+    status(POP_DIR, start, bnum);
+    /* Populate indirect blocks */
+    for (cx = 0; cx < 3; cx++) {
+        if (*(n_indirects + cx) > 0) {
+            /* Find the indirect block that has the next block */
+            bnum = find_next_ind(last, cx);
+            if (bnum != 0) {
+                *(iblocks + SIN_IND + cx) = bnum;
+                status(POP_IND, cx + 1, bnum);
+                last = mark_used(bnum, cx + 1);
+                continue;
+            }
+        }
+    }
+    i->i_extra_isize = 32;
+}
+
+/*
+ * Private method
  * Links the given inode to the root directory
  */
-void link (uint32_t target_inum) {
+void link (uint32_t inum) {
     struct inode_s *root = 0;
     uint32_t root_bnum = 0;
     uint8_t *root_block = 0;
@@ -397,6 +449,8 @@ void link (uint32_t target_inum) {
     uint16_t real_rec_len;
     struct dir_ent_s *de = 0;
     int entered = 0;
+
+    status(LINK, inum);
 
     /* Get the root inode information */
     root = (struct inode_s*)(dev +
@@ -406,7 +460,6 @@ void link (uint32_t target_inum) {
     root_block = (uint8_t*)(dev + BLOCK_OFF(root_bnum));
 
     /* Link to root */
-    status(INFO, "Linking inode %u to root directory...\n", target_inum);
     memset(target_name, 0, sizeof(target_name));
     sprintf(target_name, "recovered_%03u.bmp", n_rec);
     de = (struct dir_ent_s*)root_block;
@@ -438,7 +491,7 @@ void link (uint32_t target_inum) {
                 /* Get the next entry */
                 de = (struct dir_ent_s*)((char*)de + de->rec_len);
                 /* Build the directory entry */
-                de->inode = target_inum;
+                de->inode = inum;
                 de->rec_len = new_rec_len;
                 de->name_len = strlen(target_name);
                 strncpy(de->name, target_name, de->name_len);
@@ -454,10 +507,9 @@ void link (uint32_t target_inum) {
         de = (struct dir_ent_s*)((char*)de + de->rec_len);
     }
     if (entered) {
-        status(INFO, "Done!\n");
-        status(GOOD, "File name: %s\n\n", target_name);
+        status(RECOVERED, target_name);
     } else {
-        status(BAD, "Failed to link, exiting...\n");
+        status(ERROR, "Failed to link, exiting...\n");
         exit(-1);
     }
 }
@@ -469,26 +521,26 @@ void link (uint32_t target_inum) {
 void init (const char *fname) {
     /* Test if running as root */
     if (getuid()) {
-        status(BAD, "Requires root permissions to run!\n");
+        status(ERROR, "Requires root permissions to run!\n");
         exit(-1);
     }
 
     /* Register the exit handler */
     if (atexit(cleanup)) {
-        status(BAD, "Unable to register the exit handler!\n");
+        status(ERROR, "Unable to register the exit handler!\n");
         exit(-1);
     }
 
     /* Attempt to open the device */
     devf = open(fname, O_RDWR);
     if (devf < 0) {
-        status(BAD, "Unable to open: %s\n", fname);
+        status(ERROR, "Unable to open: %s\n", fname);
         exit(-1);
     }
     
     /* Get size of device */
     if (ioctl(devf, BLKGETSIZE, &dev_size) == -1) {
-        status(BAD, "Unable to get size of device: %s\n", fname);
+        status(ERROR, "Unable to get size of device: %s\n", fname);
         exit(-1);
     }
     /* ioctl call gives number 512 byte sectors */
@@ -497,7 +549,7 @@ void init (const char *fname) {
     /* Attempt to mmap the device */
     dev = mmap(0, dev_size, PROT_READ|PROT_WRITE, MAP_SHARED, devf, 0);
     if (dev == MAP_FAILED) {
-        status(BAD, "Unable to mmap device: %s\n", fname);
+        status(ERROR, "Unable to mmap device: %s\n", fname);
         exit(-1);
     }
 
@@ -519,7 +571,7 @@ void init (const char *fname) {
     /* Get information about each group */
     get_group_info();
     if (!gd || !block_bmps || !inode_bmps) {
-        status(BAD, "Error getting group information, exiting...\n");
+        status(ERROR, "Error getting group information, exiting...\n");
         exit(-1);
     }
 }
@@ -536,7 +588,7 @@ int scan () {
     uint32_t cur_percent;
 
     /* Scan the drive for important blocks */
-    status(INFO, "Scanning drive for important blocks...\n");
+    status(SCAN);
     percent = 0;
     for (cx = 0; cx < nblocks; cx++) {
         cur_percent = cx * 100 / nblocks;
@@ -549,8 +601,7 @@ int scan () {
         /* Start at 3x, go down to 1x */
         for (cx2 = 2; cx2 >= 0; cx2--) {
             if (!cmp_ind(cx, cx2)) {
-                status(GOOD, "Found potential %ux indirect at block %u!\n",
-                    cx2 + 1, cx);
+                status(SCAN_IND, cx2 + 1, cx);
                 *(n_indirects + cx2) += 1;
                 *(indirects + cx2) = realloc(*(indirects + cx2),
                     *(n_indirects + cx2) * sizeof(**(indirects + cx2)));
@@ -560,20 +611,20 @@ int scan () {
         }
         /* Test for BMP header */
         if (!cmp_bmp(cx)) {
-            status(GOOD, "Found potential BMP header at block %u!\n", cx);
+            status(SCAN_BMP, cx);
             n_bmp_starts++;
             bmp_starts = realloc(bmp_starts,
                 n_bmp_starts * sizeof(*bmp_starts));
             *(bmp_starts + (n_bmp_starts - 1)) = cx;
         }
     skip_tests:
-        /* Log percentage through disk */
-        if (cur_percent % 10 == 0 && cur_percent != percent) {
-            percent += 10;
-            status(INFO, "%u%% complete...\n", percent);
+        /* Broadcast percentage through disk */
+        if (cur_percent == percent + 1) {
+            percent += 1;
+            status(SCAN_PROG, percent);
         }
     }
-    status(INFO, "Done!\n\n");
+    status(DONE);
 
     /* Test if BMP start blocks gathered */
     return (bmp_starts) ? 1 : 0;
@@ -585,74 +636,42 @@ int scan () {
  */
 void collect () {
     uint32_t cx;
-    uint32_t cx2;
 
+    status(COLLECT);
+    /* Go through every potential BMP header block found */
     for (cx = 0; cx < n_bmp_starts; cx++) {
-        struct bmp_head_s *bmp_head = (struct bmp_head_s*)(dev +
-            BLOCK_OFF(*(bmp_starts + cx)));
+        uint32_t inum;
+        uint32_t bnum = *(bmp_starts + cx);
+        struct bmp_head_s *bmp_head = (struct bmp_head_s*)
+            (dev + BLOCK_OFF(bnum));
         uint32_t size = bmp_head->bmp_file_size;
         uint32_t size_blocks = size / BYTES_PER_BLOCK;
-        uint32_t inum;
-        uint32_t *iblocks;
-        uint32_t bnum;
-        uint32_t last;
 
         /* Skip used blocks */
-        if (is_block_used(*(bmp_starts + cx))) {
+        if (is_block_used(bnum)) {
             continue;
         }
-
-        /* Ensure that overflow is accounted for */
-        size_blocks += (size % BYTES_PER_BLOCK) ? 1 : 0;
 
         /* Sanity check: needed inderect blocks are found */
-        bnum = *(bmp_starts + cx);
-        status(INFO, "Running sanity check on block %u...\n", bnum);
+        status(SANITY, bnum);
         if (size_blocks > 12 && !find_next_ind(bnum + 11, 0)) {
-            status(INFO, "Failed, skipping...\n\n");
+            status(WARN, "Failed, skipping...\n");
             continue;
         }
-        status(GOOD, "Passed!\n");
 
         /* Try to reserve an inode*/
         if (!(inum = res_ino())) {
-            status(BAD, "Unable to reserve an inode, exiting...\n");
+            status(ERROR, "Unable to reserve an inode, exiting...\n");
             exit(-1);
         }
-        status(GOOD, "Reserved inode %u!\n", inum);
+        status(INODE, inum);
 
         /* Populate the inode with required fields */
-        status(INFO, "Populating inode %u...\n", inum);
-        i->i_mode = MODE_777 | TYPE_REG;
-        i->i_size_lo = size;
-        i->i_links_count = 1;
-        iblocks = (uint32_t*)(i->i_block);
-        /* Populate direct blocks */
-        for (cx2 = 0; cx2 < size_blocks && cx2 < 12; cx2++) {
-            bnum = *(bmp_starts + cx) + cx2;
-            status(INFO, "Direct %u: %u\n", cx2, bnum);
-            *(iblocks + cx2) = bnum;
-            last = mark_used(bnum, 0);
-        }
-        /* Populate indirect blocks */
-        for (cx2 = 0; cx2 < 3; cx2++) {
-            if (*(n_indirects + cx2) > 0) {
-                /* Find the indirect block that has the next block */
-                bnum = find_next_ind(last, cx2);
-                if (bnum != 0) {
-                    *(iblocks + SIN_IND + cx2) = bnum;
-                    status(INFO, "%ux Indirect: %u\n", cx2 + 1, bnum);
-                    last = mark_used(bnum, cx2 + 1);
-                    continue;
-                }
-            }
-        }
-
-        i->i_extra_isize = 32;
-        status(INFO, "Done!\n\n");
+        populate(inum, bnum);
 
         /* Link the inode to the root directory */
         link(inum);
         n_rec++;
     }
+    status(DONE);
 }
