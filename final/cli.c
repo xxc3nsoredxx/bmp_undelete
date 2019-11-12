@@ -41,6 +41,7 @@ size_t n_indirects [3] = {
     0, 0, 0
 };
 struct inode_s *i = 0;
+uint32_t n_rec = 0;
 char target_name [100];
 
 void usage () {
@@ -523,9 +524,8 @@ uint32_t find_next_ind (uint32_t last, uint32_t ind) {
 
 /*
  * Links the given inode to the root directory
- * file_num is the running count of recovered files
  */
-void link (uint32_t file_num, uint32_t target_inum) {
+void link (uint32_t target_inum) {
     struct inode_s *root = 0;
     uint32_t root_bnum = 0;
     uint8_t *root_block = 0;
@@ -544,7 +544,7 @@ void link (uint32_t file_num, uint32_t target_inum) {
     /* Link to root */
     printf(INFO("Linking inode %u to root directory...\n"), target_inum);
     memset(target_name, 0, sizeof(target_name));
-    sprintf(target_name, "recovered_%03u.bmp", file_num);
+    sprintf(target_name, "recovered_%03u.bmp", n_rec);
     de = (struct dir_ent_s*)root_block;
     for (;;) {
         new_rec_len = sizeof(de->inode) +
@@ -656,6 +656,15 @@ int main (int argc, char **argv) {
         /* Ensure that overflow is accounted for */
         size_blocks += (size % BYTES_PER_BLOCK) ? 1 : 0;
 
+        /* Sanity check: needed inderect blocks are found */
+        bnum = *(bmp_starts + cx);
+        printf(INFO("Running sanity check on block %u...\n"), bnum);
+        if (size_blocks > 12 && !find_next_ind(bnum + 11, 0)) {
+            printf(INFO("Failed, skipping...\n\n"));
+            continue;
+        }
+        printf(GOOD("Passed!\n"));
+
         /* Try to reserve an inode*/
         if (!(inum = res_ino())) {
             printf(BAD("Unable to reserve an inode, exiting...\n"));
@@ -672,7 +681,7 @@ int main (int argc, char **argv) {
         /* Populate direct blocks */
         for (cx2 = 0; cx2 < size_blocks && cx2 < 12; cx2++) {
             bnum = *(bmp_starts + cx) + cx2;
-            printf(GOOD("Direct %u: %u\n"), cx2, bnum);
+            printf(INFO("Direct %u: %u\n"), cx2, bnum);
             *(iblocks + cx2) = bnum;
             last = mark_used(bnum, 0);
         }
@@ -683,17 +692,19 @@ int main (int argc, char **argv) {
                 bnum = find_next_ind(last, cx2);
                 if (bnum != 0) {
                     *(iblocks + SIN_IND + cx2) = bnum;
-                    printf(GOOD("%ux Indirect: %u\n"), cx2 + 1, bnum);
+                    printf(INFO("%ux Indirect: %u\n"), cx2 + 1, bnum);
                     last = mark_used(bnum, cx2 + 1);
                     continue;
                 }
             }
         }
+
         i->i_extra_isize = 32;
         printf(INFO("Done!\n\n"));
 
         /* Link the inode to the root directory */
-        link(cx, inum);
+        link(inum);
+        n_rec++;
     }
 
     exit(0);
