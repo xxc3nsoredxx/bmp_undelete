@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-extern const char BMP_MAGIC [];
+extern const char BMP_MAGIC [2];
 
 struct bmp_head_s {
     uint8_t  bmp_magic [2];
