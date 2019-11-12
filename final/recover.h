@@ -1,7 +1,6 @@
 #ifndef RECOVER_H_20191111_183020
 #define RECOVER_H_20191111_183020
 
-<<<<<<< HEAD
 enum status_level_e {
     BAD, INFO, GOOD
 };
@@ -26,7 +25,5 @@ void status (enum status_level_e sl, const char *fmt, ...);
 void init (const char *fname);
 int scan ();
 void collect ();
-=======
->>>>>>> 84b2620017c0d93bf2ac7f078f11bc67e90cc8ef
 
 #endif /* RECOVER_H_20191111_183020 */
