@@ -83,7 +83,7 @@ void create_popup (enum status_code_e s, const char *fmt, va_list ap) {
     int y;
     int width;
     int height;
-    attr_t attr = A_NORMAL;
+    attr_t attr = A_REVERSE;
     short pair = 0;
 
     if (s == ERROR) {
@@ -116,13 +116,13 @@ void create_popup (enum status_code_e s, const char *fmt, va_list ap) {
     pu.text_h = height - 2;
     y = height;
 
-    /* Create the popup and shadow */
+    /* Setup shadow */
     pu_shadow.win = newwin(height, width, y, x + 1);
-    /* Set up shadow */
     wborder(pu_shadow.win,
         SHADOW, SHADOW, SHADOW, SHADOW,
         SHADOW, SHADOW, SHADOW, SHADOW);
 
+    /* Set up popup */
     pu.win = newwin(height, width, y - 1, x);
     move_to(&pu, (pu.text_w - pu.message_len) / 2, pu.text_h / 3);
     waddchstr(pu.win, pu.message);
@@ -133,7 +133,7 @@ void create_popup (enum status_code_e s, const char *fmt, va_list ap) {
         BOX_TL, BOX_TR, BOX_BL, BOX_BR);
     move_to(&pu, 1, 0);
     waddchstr(pu.win, pu.title);
-    wbkgd(pu.win, A_REVERSE);
+    wbkgd(pu.win, COLOR_PAIR(pair) | A_REVERSE);
     wchgat(pu.win, pu.title_len, attr, pair, NULL);
 
     wnoutrefresh(pu_shadow.win);
@@ -395,8 +395,10 @@ void prep_cmds () {
  */
 int parse_input (int key) {
     switch (key) {
+    /* Select Drive */
     case KEY_F(1):
         return 1;
+    /* Scan Drive */
     case KEY_F(3):
         /* Error if no drive selected */
         if (!drive_selected) {
@@ -404,12 +406,31 @@ int parse_input (int key) {
         } else {
         }
         return 1;
+    /* Scan Results */
     case KEY_F(5):
+        /* Error if no drive not scanned */
+        if (!drive_selected) {
+            status(ERROR, "No drive scanned!");
+        } else {
+        }
         return 1;
+    /* Rebuild Files */
     case KEY_F(7):
+        /* Error if no drive not scanned */
+        if (!drive_selected) {
+            status(ERROR, "No drive scanned!");
+        } else {
+        }
         return 1;
+    /* List Files */
     case KEY_F(9):
+        /* Error if no rebuilt files */
+        if (!drive_selected) {
+            status(ERROR, "No files have been rebuilt yet!");
+        } else {
+        }
         return 1;
+    /* Quit */
     case KEY_F(11):
         return 0;
     default:
