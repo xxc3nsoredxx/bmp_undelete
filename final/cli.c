@@ -1,6 +1,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 #include "recover.h"
 
@@ -15,7 +16,9 @@ void usage () {
     printf("NOTE: Requires root permissions.\n");
 }
 
-/* Recieve the broadcasted status */
+/* 
+ * Recieve the broadcasted status
+ */
 void status (enum status_code_e sl, ...) {
     va_list ap;
     uint32_t var = 0;
@@ -125,6 +128,12 @@ int main (int argc, char **argv) {
     /* Test args */
     if (argc != 2) {
         usage();
+        exit(-1);
+    }
+
+    /* Test if running as root */
+    if (getuid()) {
+        status(ERROR, "Requires root permissions to run!\n");
         exit(-1);
     }
 

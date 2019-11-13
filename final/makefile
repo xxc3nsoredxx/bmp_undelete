@@ -1,11 +1,16 @@
-OBJS_CLI = bmp.o cli.o recover.o
+CLI_OBJS = bmp.o cli.o recover.o
+TUI_OBJS = bmp.o recover.o tui.o
 CC = gcc
 CFLAGS = -Wall -Wextra --pedantic-errors -std=c89 -c
+TUI_LFLAGS = -lncurses
 
-all: recover_cli
+all: recover_cli recover_tui
 
-recover_cli: $(OBJS_CLI)
-	$(CC) $(OBJS_CLI) -o recover_cli
+recover_cli: $(CLI_OBJS)
+	$(CC) $(CLI_OBJS) -o recover_cli
+
+recover_tui: $(TUI_OBJS)
+	$(CC) $(TUI_OBJS) $(TUI_LFLAGS) -o recover_tui
 
 bmp.o: bmp.c bmp.h
 	$(CC) $(CFLAGS) bmp.c
@@ -15,3 +20,6 @@ cli.o: cli.c recover.h
 
 recover.o: recover.c bmp.h ext.h recover.h
 	$(CC) $(CFLAGS) recover.c
+
+tui.o: tui.c recover.h
+	$(CC) $(CFLAGS) tui.c

@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 struct fs_info_s {
+    char *name;
     const uint32_t *nblocks;
     const uint32_t *ngroups;
     const size_t *ipg;

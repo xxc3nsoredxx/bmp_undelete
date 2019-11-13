@@ -39,6 +39,7 @@ char target_name [100];
 
 /* Can be used by the client to access filesystem info */
 struct fs_info_s fs_info = {
+    (char*)0,
     &nblocks,
     &ngroups,
     &ipg,
@@ -70,6 +71,9 @@ void cleanup () {
     }
     if (gd) {
         free(gd);
+    }
+    if (fs_info.name) {
+        free(fs_info.name);
     }
     if (dev != MAP_FAILED) {
         munmap(dev, dev_size);
@@ -519,12 +523,6 @@ void link (uint32_t inum) {
  * Initialization tasks
  */
 void init (const char *fname) {
-    /* Test if running as root */
-    if (getuid()) {
-        status(ERROR, "Requires root permissions to run!\n");
-        exit(-1);
-    }
-
     /* Register the exit handler */
     if (atexit(cleanup)) {
         status(ERROR, "Unable to register the exit handler!\n");
@@ -552,6 +550,10 @@ void init (const char *fname) {
         status(ERROR, "Unable to mmap device: %s\n", fname);
         exit(-1);
     }
+
+    /* Save the name in the info struct */
+    fs_info.name = calloc(strlen(fname) + 1, sizeof(*fs_info.name));
+    strcpy(fs_info.name, fname);
 
     /* Calculate the number of blocks on the drive */
     nblocks = dev_size / BYTES_PER_BLOCK;
