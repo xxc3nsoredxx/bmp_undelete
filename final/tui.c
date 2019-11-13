@@ -24,6 +24,7 @@
 #define SHADOW      ACS_CKBOARD
 
 #define COLOR_ERROR 1
+#define COLOR_WARN  2
 
 #define DT_BLK      6
 
@@ -103,6 +104,7 @@ void create_error (enum status_code_e s, const char *fmt, va_list ap) {
         pair = COLOR_ERROR;
     } else {
         title = "Warning!";
+        pair = COLOR_WARN;
     }
 
     err.title_len = strlen(title);
@@ -206,6 +208,7 @@ void status (enum status_code_e sl, ...) {
         create_error(sl, va_arg(ap, const char*), ap);
         break;
     case WARN:
+        create_error(sl, va_arg(ap, const char*), ap);
         break;
     }
 
@@ -481,6 +484,7 @@ void tui_init () {
     start_color();
 
     init_pair(COLOR_ERROR, COLOR_RED, COLOR_BLACK);
+    init_pair(COLOR_WARN, COLOR_YELLOW, COLOR_BLACK);
 
     /* Create the main output window */
     build_win(&op, "Output", 0, 0, COLS, LINES - 4);
@@ -652,6 +656,7 @@ int parse_input (int key) {
         if (!drive_selected) {
             status(ERROR, "No drive selected!");
         } else {
+            status(WARN, "Drive scanning not implemented.");
         }
         return 1;
     /* Scan Results */
@@ -660,6 +665,7 @@ int parse_input (int key) {
         if (!drive_scanned) {
             status(ERROR, "No drive scanned!");
         } else {
+            status(WARN, "Drive scanning not implemented.");
         }
         return 1;
     /* Rebuild Files */
@@ -668,6 +674,7 @@ int parse_input (int key) {
         if (!drive_scanned) {
             status(ERROR, "No drive scanned!");
         } else {
+            status(WARN, "File recovery not implemented.");
         }
         return 1;
     /* List Files */
@@ -676,6 +683,7 @@ int parse_input (int key) {
         if (!files_rebuilt) {
             status(ERROR, "No files have been rebuilt yet!");
         } else {
+            status(WARN, "File recovery not implemented.");
         }
         return 1;
     /* Quit */
