@@ -25,6 +25,7 @@
 
 #define COLOR_ERROR 1
 #define COLOR_WARN  2
+#define COLOR_PROG  3
 
 #define DT_BLK      6
 
@@ -38,14 +39,40 @@ struct win_s {
     int cur_y;
 };
 
+struct prog_win_s {
+    WINDOW *win;
+    chtype *title;
+    int title_len;
+    chtype *scan_msg;
+    int scan_msg_len;
+    int text_w;
+    int text_h;
+    int prog_x;
+    int prog_y;
+    int prog_h;
+    int bar_w;
+    int percent;
+    int segment_inc;
+    chtype *percent_prog;
+    chtype *prog_bar;
+    int cur_x;
+    int cur_y;
+};
+
 struct win_s op;
 struct win_s cmds;
 struct win_s err;
 struct win_s err_shadow;
 struct win_s blk_dev;
 struct win_s blk_dev_shadow;
+struct prog_win_s prog;
+struct prog_win_s prog_shadow;
 
 int drive_selected = 0;
+/*
+ * 1: ongoing scan
+ * 2: finished scan
+ */
 int drive_scanned = 0;
 int files_rebuilt = 0;
 
@@ -154,6 +181,124 @@ void create_error (enum status_code_e s, const char *fmt, va_list ap) {
     getch();
 }
 
+/*
+ * Update the progress display
+ */
+void update_progress (int new_p) {
+    char percent_prog_str [6];
+    /* Draw the shadow */
+    wborder(prog_shadow.win,
+        SHADOW, SHADOW, SHADOW, SHADOW,
+        SHADOW, SHADOW, SHADOW, SHADOW);
+
+    /* Draw the progress window */
+    prog.cur_x = prog.prog_x;
+    prog.cur_y = prog.prog_y;
+    /* Write the message above the progress bar */
+    wmove(prog.win, prog.cur_y, prog.cur_x);
+    waddchstr(prog.win, prog.scan_msg);
+    /* Test if the percent has gone up by the segment threshold */
+    if (new_p >= prog.percent + prog.segment_inc)
+    if (prog.percent + prog.segment_inc >= new_p) {
+        prog.percent = new_p;
+        prog.bar_w++;
+    }
+    /* Create the percent string */
+    sprintf(percent_prog_str, "% 3d%% ", new_p);
+    prog.percent_prog = strchtype(percent_prog_str, 5);
+    prog.cur_y += 4;
+    wmove(prog.win, prog.cur_y, prog.cur_x);
+    waddchstr(prog.win, prog.percent_prog);
+    /* Create the border */
+    wborder(prog.win,
+        /* Left, right, top, bottom sides */
+        BOX_VER, BOX_VER, BOX_HOR, BOX_HOR,
+        BOX_TL, BOX_TR, BOX_BL, BOX_BR);
+    /* Create the title */
+    wmove(prog.win, 0, 1);
+    waddchstr(prog.win, prog.title);
+
+    wbkgd(prog.win, COLOR_PAIR(COLOR_PROG));
+
+    /* Create the progress bar itself */
+    prog.cur_y--;
+    prog.cur_x += 5;
+    wmove(prog.win, prog.cur_y, prog.cur_x);
+    wchgat(prog.win, prog.bar_w, A_REVERSE, COLOR_PROG, NULL);
+    prog.cur_y++;
+    wmove(prog.win, prog.cur_y, prog.cur_x);
+    wchgat(prog.win, prog.bar_w, A_REVERSE, COLOR_PROG, NULL);
+    prog.cur_y++;
+    wmove(prog.win, prog.cur_y, prog.cur_x);
+    wchgat(prog.win, prog.bar_w, A_REVERSE, COLOR_PROG, NULL);
+
+    /* Draw to screen */
+    wnoutrefresh(prog_shadow.win);
+    wnoutrefresh(prog.win);
+    doupdate();
+}
+
+/*
+ * Set up a progress window for the drive scan
+ */
+void setup_scan_progress () {
+    const char *title = "Drive Scan";
+    const char *scan_msg_p1 = "Scan of ";
+    const char *scan_msg_p2 = " in progress...";
+    char *scan_msg_str = calloc(strlen(scan_msg_p1) + strlen(scan_msg_p2) +
+        strlen(fs_info.name) + 1, sizeof(*scan_msg_str));
+    int x;
+    int y;
+    int width;
+    int height;
+
+    /* Set drive scan to "ongoing" */
+    drive_scanned = 1;
+    
+    /* Calculate the dimensions of the window */
+    /*
+     * -----------------  border top:   1 row
+     *                    padding:      1 row
+     *   message          message:      1 row
+     *                    padding:      2 rows
+     *           
+     *        progress    progress:     3 rows
+     *   NNN% progress    indicator
+     *        progress
+     *                    padding:      1 row
+     * -----------------  border:       1 row
+     */
+    width = 3 * COLS / 5;
+    height = 10;
+    x = (COLS - width) / 2;
+    y = (LINES - height) / 2;
+
+    prog.win = newwin(height, width, y - 1, x);
+    prog.text_w = width - 2;
+    prog.text_h = height - 2;
+    prog.prog_x = 3;
+    prog.prog_y = 2;
+    prog.prog_h = 6;
+    prog.bar_w = 0;
+    prog.percent = 0;
+    prog.segment_inc = 100 / (prog.text_w - 4 - 5);
+
+    prog.title_len = strlen(title);
+    prog.title = strchtype(title, prog.title_len);
+    /* Build the message that goes abve the progress bar */
+    prog.scan_msg_len = sprintf(scan_msg_str, "%s%s%s",
+        scan_msg_p1, fs_info.name, scan_msg_p2);
+    prog.scan_msg = strchtype(scan_msg_str, prog.scan_msg_len);
+    prog.percent_prog = strchtype("  0% ", 5);
+
+    /* Set up the shadow */
+    prog_shadow.win = newwin(height, width, y, x + 1);
+
+    free(scan_msg_str);
+
+    update_progress(prog.percent);
+}
+
 /* 
  * Recieve the broadcasted status
  */
@@ -185,12 +330,14 @@ void status (enum status_code_e sl, ...) {
         break;
 
     case SCAN:
+        setup_scan_progress();
         break;
     case SCAN_IND:
         break;
     case SCAN_BMP:
         break;
     case SCAN_PROG:
+        update_progress(va_arg(ap, uint32_t));
         break;
 
     case COLLECT:
@@ -396,6 +543,21 @@ void find_block_devs () {
 void tui_cleanup () {
     int cx;
 
+    if (prog_shadow.win) {
+        delwin(prog_shadow.win);
+    }
+    if (prog.prog_bar) {
+        free(prog.prog_bar);
+    }
+    if (prog.scan_msg) {
+        free(prog.scan_msg);
+    }
+    if (prog.title) {
+        free(prog.title);
+    }
+    if (prog.win) {
+        delwin(prog.win);
+    }
     if (block_devices) {
         for (cx = 0; cx < n_block_devices; cx++) {
             free(*(block_devices + cx));
@@ -485,6 +647,7 @@ void tui_init () {
 
     init_pair(COLOR_ERROR, COLOR_RED, COLOR_BLACK);
     init_pair(COLOR_WARN, COLOR_YELLOW, COLOR_BLACK);
+    init_pair(COLOR_PROG, COLOR_BLUE, COLOR_WHITE);
 
     /* Create the main output window */
     build_win(&op, "Output", 0, 0, COLS, LINES - 4);
@@ -656,7 +819,7 @@ int parse_input (int key) {
         if (!drive_selected) {
             status(ERROR, "No drive selected!");
         } else {
-            status(WARN, "Drive scanning not implemented.");
+            scan();
         }
         return 1;
     /* Scan Results */
@@ -665,7 +828,7 @@ int parse_input (int key) {
         if (!drive_scanned) {
             status(ERROR, "No drive scanned!");
         } else {
-            status(WARN, "Drive scanning not implemented.");
+            status(WARN, "Drive scanning not fully implemented.");
         }
         return 1;
     /* Rebuild Files */
