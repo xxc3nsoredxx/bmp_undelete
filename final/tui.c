@@ -55,8 +55,15 @@ struct prog_win_s {
     int segment_inc;
     chtype *percent_prog;
     chtype *prog_bar;
+    chtype *bar_perim_top;
+    chtype *bar_perim_bot;
     int cur_x;
     int cur_y;
+};
+
+struct pot_block_s {
+    uint32_t *blocks;
+    uint32_t count;
 };
 
 struct win_s op;
@@ -68,11 +75,19 @@ struct win_s blk_dev_shadow;
 struct prog_win_s prog;
 struct prog_win_s prog_shadow;
 
-int drive_selected = 0;
+struct pot_block_s pots [4] = {
+    { (uint32_t*)0, 0 },
+    { (uint32_t*)0, 0 },
+    { (uint32_t*)0, 0 },
+    { (uint32_t*)0, 0 }
+};
+
 /*
- * 1: ongoing scan
- * 2: finished scan
+ * 0: not started
+ * 1: ongoing
+ * 2: finished
  */
+int drive_selected = 0;
 int drive_scanned = 0;
 int files_rebuilt = 0;
 
@@ -93,7 +108,7 @@ chtype* strchtype (const char *src, size_t len) {
     if (len > 0) {
         ret = calloc(len + 1, sizeof(*ret));
 
-        for (cx = 0; cx < len; cx++) {
+        for (cx = 0; cx < len && cx < strlen(src); cx++) {
             *(ret + cx) = *(src + cx);
         }
     }
@@ -135,6 +150,9 @@ void create_error (enum status_code_e s, const char *fmt, va_list ap) {
     }
 
     err.title_len = strlen(title);
+    if (err.title) {
+        free(err.title);
+    }
     err.title = strchtype(title, err.title_len);
 
     /* Convert the message into it's string form */
@@ -198,13 +216,18 @@ void update_progress (int new_p) {
     wmove(prog.win, prog.cur_y, prog.cur_x);
     waddchstr(prog.win, prog.scan_msg);
     /* Test if the percent has gone up by the segment threshold */
-    if (new_p >= prog.percent + prog.segment_inc)
-    if (prog.percent + prog.segment_inc >= new_p) {
+    if (new_p >= prog.percent + prog.segment_inc) {
         prog.percent = new_p;
-        prog.bar_w++;
+        prog.bar_w += 1;
+        /* Update the increment threshold */
+        prog.segment_inc = (100 - new_p) /
+            (prog.text_w - (2 + 6 + 3 + prog.bar_w));
     }
     /* Create the percent string */
     sprintf(percent_prog_str, "% 3d%% ", new_p);
+    if (prog.percent_prog) {
+        free(prog.percent_prog);
+    }
     prog.percent_prog = strchtype(percent_prog_str, 5);
     prog.cur_y += 4;
     wmove(prog.win, prog.cur_y, prog.cur_x);
@@ -218,17 +241,41 @@ void update_progress (int new_p) {
     wmove(prog.win, 0, 1);
     waddchstr(prog.win, prog.title);
 
+    /* Create the enclosure for the progress bar */
+    /* Go to the top left corner */
+    prog.cur_y -= 2;
+    prog.cur_x += 5;
+    wmove(prog.win, prog.cur_y, prog.cur_x);
+    /* Draw left line */
+    wvline(prog.win, BOX_VER, 5);
+    /* Draw top line */
+    waddchstr(prog.win, prog.bar_perim_top);
+
+    /* Go to the top right corner, down one */
+    prog.cur_x = prog.text_w - 2;
+    prog.cur_y += 1;
+    wmove(prog.win, prog.cur_y, prog.cur_x);
+    /* Draw the right line */
+    wvline(prog.win, BOX_VER, 4);
+
+    /* Go to the bottom left corner */
+    prog.cur_y += 3;
+    prog.cur_x = 8;
+    wmove(prog.win, prog.cur_y, prog.cur_x);
+    /* Draw the bottom line */
+    waddchstr(prog.win, prog.bar_perim_bot);
+
     wbkgd(prog.win, COLOR_PAIR(COLOR_PROG));
 
     /* Create the progress bar itself */
-    prog.cur_y--;
-    prog.cur_x += 5;
+    prog.cur_y -= 3;
+    prog.cur_x += 1;
     wmove(prog.win, prog.cur_y, prog.cur_x);
     wchgat(prog.win, prog.bar_w, A_REVERSE, COLOR_PROG, NULL);
-    prog.cur_y++;
+    prog.cur_y += 1;
     wmove(prog.win, prog.cur_y, prog.cur_x);
     wchgat(prog.win, prog.bar_w, A_REVERSE, COLOR_PROG, NULL);
-    prog.cur_y++;
+    prog.cur_y += 1;
     wmove(prog.win, prog.cur_y, prog.cur_x);
     wchgat(prog.win, prog.bar_w, A_REVERSE, COLOR_PROG, NULL);
 
@@ -247,26 +294,38 @@ void setup_scan_progress () {
     const char *scan_msg_p2 = " in progress...";
     char *scan_msg_str = calloc(strlen(scan_msg_p1) + strlen(scan_msg_p2) +
         strlen(fs_info.name) + 1, sizeof(*scan_msg_str));
-    int x;
-    int y;
-    int width;
-    int height;
+    char *bar_perim_top_str;
+    char *bar_perim_bot_str;
+    unsigned int x;
+    unsigned int y;
+    unsigned int width;
+    unsigned int height;
+    unsigned int lpad = 2;
+    unsigned int percent_len = 5;
+    unsigned int rpad = 2;
+    unsigned int bar_len;
 
-    /* Set drive scan to "ongoing" */
-    drive_scanned = 1;
+    if (!scan_msg_str) {
+        status(ERROR, "Calloc failed on scan_msg_str");
+        exit(-1);
+    }
     
     /* Calculate the dimensions of the window */
     /*
-     * -----------------  border top:   1 row
-     *                    padding:      1 row
-     *   message          message:      1 row
-     *                    padding:      2 rows
-     *           
-     *        progress    progress:     3 rows
-     *   NNN% progress    indicator
-     *        progress
-     *                    padding:      1 row
-     * -----------------  border:       1 row
+     * +-------------------+ border top:   1 row
+     * |                   | padding:      1 row
+     * |  message          | message:      1 row
+     * |                   | padding:      2 rows
+     * |       +-      -+  |
+     * |       |progress|  | progress:     3 rows
+     * |  NNN% |progress|  | indicator
+     * |       |progress|  |
+     * |       +-      -+  | padding:      1 row
+     * +-------------------+ border:       1 row
+     * width: 19
+     * text_w: 17
+     * minus pad: 13
+     * minus % string: 8
      */
     width = 3 * COLS / 5;
     height = 10;
@@ -281,22 +340,77 @@ void setup_scan_progress () {
     prog.prog_h = 6;
     prog.bar_w = 0;
     prog.percent = 0;
-    prog.segment_inc = 100 / (prog.text_w - 4 - 5);
+    prog.segment_inc = 100 / (prog.text_w - (2 + 6 + 3));
+    bar_len = prog.text_w - (lpad + percent_len + rpad);
+    bar_perim_top_str = calloc(bar_len + 1, sizeof(*bar_perim_top_str));
+    memset(bar_perim_top_str, ' ', bar_len);
+    if (prog.bar_perim_top) {
+        free(prog.bar_perim_top);
+    }
+    prog.bar_perim_top = strchtype(bar_perim_top_str, bar_len);
+    *(prog.bar_perim_top + 0) = BOX_TL;
+    *(prog.bar_perim_top + 1) = BOX_HOR;
+    *(prog.bar_perim_top + bar_len - 2) = BOX_HOR;
+    *(prog.bar_perim_top + bar_len - 1) = BOX_TR;
+
+    bar_perim_bot_str = calloc(bar_len + 1, sizeof(*bar_perim_bot_str));
+    memset(bar_perim_bot_str, ' ', bar_len);
+    if (prog.bar_perim_bot) {
+        free(prog.bar_perim_bot);
+    }
+    prog.bar_perim_bot = strchtype(bar_perim_bot_str, bar_len);
+    *(prog.bar_perim_bot + 0) = BOX_BL;
+    *(prog.bar_perim_bot + 1) = BOX_HOR;
+    *(prog.bar_perim_bot + bar_len - 2) = BOX_HOR;
+    *(prog.bar_perim_bot + bar_len - 1) = BOX_BR;
 
     prog.title_len = strlen(title);
+    if (prog.title) {
+        free(prog.title);
+    }
     prog.title = strchtype(title, prog.title_len);
     /* Build the message that goes abve the progress bar */
     prog.scan_msg_len = sprintf(scan_msg_str, "%s%s%s",
         scan_msg_p1, fs_info.name, scan_msg_p2);
+    if (prog.scan_msg) {
+        free(prog.scan_msg);
+    }
     prog.scan_msg = strchtype(scan_msg_str, prog.scan_msg_len);
+    if (prog.percent_prog) {
+        free(prog.percent_prog);
+    }
     prog.percent_prog = strchtype("  0% ", 5);
 
     /* Set up the shadow */
     prog_shadow.win = newwin(height, width, y, x + 1);
 
+    free(bar_perim_bot_str);
+    free(bar_perim_top_str);
     free(scan_msg_str);
 
     update_progress(prog.percent);
+}
+
+/*
+ * Log the findings on the output window
+ */
+void log_potential_blocks () {
+    /* Print the statistics so far */
+    mvwprintw(op.win, 1, 1,
+        "Number of potential 3x indirect blocks found: %u",
+        (pots + 3)->count);
+    mvwprintw(op.win, 2, 1,
+        "Number of potential 2x indirect blocks found: %u",
+        (pots + 2)->count);
+    mvwprintw(op.win, 3, 1,
+        "Number of potential 1x indirect blocks found: %u",
+        (pots + 1)->count);
+    mvwprintw(op.win, 4, 1,
+        "Number of potential BMP blocks found: %u",
+        (pots + 0)->count);
+
+    /* Schedule it to be shown */
+    wnoutrefresh(op.win);
 }
 
 /* 
@@ -304,8 +418,8 @@ void setup_scan_progress () {
  */
 void status (enum status_code_e sl, ...) {
     va_list ap;
-
-    va_start(ap, sl);
+    int var1;
+    uint32_t var2;
 
     switch (sl) {
     /* Handle methods */
@@ -313,8 +427,15 @@ void status (enum status_code_e sl, ...) {
         break;
 
     case GROUP_INFO:
+        drive_selected = 1;
+        mvwprintw(op.win, 1, 1,
+            "Gathering basic information about groups:");
         break;
     case GROUP_PROG:
+        va_start(ap, sl);
+        var2 = va_arg(ap, uint32_t);
+        va_end(ap);
+        wprintw(op.win, " %u", var2);
         break;
 
     case POP:
@@ -330,14 +451,49 @@ void status (enum status_code_e sl, ...) {
         break;
 
     case SCAN:
+        drive_scanned = 1;
         setup_scan_progress();
         break;
     case SCAN_IND:
+        va_start(ap, sl);
+        /* Extract the indirect level and block number */
+        var1 = va_arg(ap, int);
+        var2 = va_arg(ap, uint32_t);
+        va_end(ap);
+
+        /* Track the newcomer */
+        (pots + var1)->count += 1;
+        (pots + var1)->blocks = realloc((pots + var1)->blocks,
+            (pots + var1)->count * sizeof(*(pots + var1)->blocks));
+        *((pots + var1)->blocks + (pots + var1)->count - 1) = var2;
+
+        log_potential_blocks();
+        wnoutrefresh(prog_shadow.win);
+        wnoutrefresh(prog.win);
+        doupdate();
         break;
     case SCAN_BMP:
+        va_start(ap, sl);
+        /* Extract the block number */
+        var2 = va_arg(ap, uint32_t);
+        va_end(ap);
+
+        /* Track the newcomer */
+        pots->count += 1;
+        pots->blocks = realloc(pots->blocks,
+            pots->count * sizeof(*pots->blocks));
+        *(pots->blocks + pots->count - 1) = var2;
+
+        log_potential_blocks();
+        wnoutrefresh(prog_shadow.win);
+        wnoutrefresh(prog.win);
+        doupdate();
         break;
     case SCAN_PROG:
-        update_progress(va_arg(ap, uint32_t));
+        va_start(ap, sl);
+        var2 = va_arg(ap, uint32_t);
+        va_end(ap);
+        update_progress(var2);
         break;
 
     case COLLECT:
@@ -348,18 +504,25 @@ void status (enum status_code_e sl, ...) {
         break;
 
     case DONE:
+        if (drive_selected == 1) {
+            drive_selected = 2;
+        } else if (drive_scanned == 1) {
+            drive_scanned = 2;
+        }
         break;
 
     /* Handle error codes */
     case ERROR:
+        va_start(ap, sl);
         create_error(sl, va_arg(ap, const char*), ap);
+        va_end(ap);
         break;
     case WARN:
+        va_start(ap, sl);
         create_error(sl, va_arg(ap, const char*), ap);
+        va_end(ap);
         break;
     }
-
-    va_end(ap);
 }
 
 /*
@@ -382,10 +545,16 @@ void block_dev_popup () {
     attr_t attr = A_REVERSE;
 
     blk_dev.title_len = strlen(title);
+    if (blk_dev.title) {
+        free(blk_dev.title);
+    }
     blk_dev.title = strchtype(title, blk_dev.title_len);
 
     for (cx = 0; cx < n_block_devices; cx++) {
         /* Convert the names into chtype* */
+        if (*(block_devices + cx)) {
+            free(*(block_devices + cx));
+        }
         *(block_devices + cx) = strchtype(*(block_devices_str + cx),
             strlen(*(block_devices_str + cx)));
 
@@ -397,7 +566,9 @@ void block_dev_popup () {
 
     /* Center horizontally */
     width = longest_name + 6;
-    width = (COLS / 3 > width) ? COLS / 3 : width;
+    width = ((unsigned)(COLS / 3) > (unsigned)width)
+        ? (unsigned)(COLS / 3)
+        : (unsigned)width;
     width = (strlen(inst1_str) + strlen(inst2_str) + strlen(inst3_str)
         > width)
             ? strlen(inst1_str) + strlen(inst2_str) + strlen(inst3_str)
@@ -494,13 +665,17 @@ void find_block_devs () {
     /* Clear the array */
     if (block_devices_str) {
         for (cx = 0; cx < n_block_devices; cx++) {
-            free(*(block_devices_str + cx));
+            if (*(block_devices_str + cx)) {
+                free(*(block_devices_str + cx));
+            }
         }
         free(block_devices_str);
     }
     if (block_devices) {
         for (cx = 0; cx < n_block_devices; cx++) {
-            free(*(block_devices + cx));
+            if (*(block_devices + cx)) {
+                free(*(block_devices + cx));
+            }
         }
         free(block_devices);
     }
@@ -524,7 +699,8 @@ void find_block_devs () {
             block_devices_str = realloc(block_devices_str,
                 n_block_devices * sizeof(*block_devices_str));
             *(block_devices_str + n_block_devices - 1) =
-                malloc(strlen(dname) + strlen(de->d_name));
+                calloc(strlen(dname) + strlen(de->d_name) + 1,
+                sizeof(**(block_devices_str + n_block_devices - 1)));
             strcpy(*(block_devices_str + n_block_devices - 1), dname);
             strcpy((*(block_devices_str + n_block_devices - 1) +
                 strlen(dname)), de->d_name);
@@ -543,8 +719,19 @@ void find_block_devs () {
 void tui_cleanup () {
     int cx;
 
+    for (cx = 0; cx < 4; cx++) {
+        if ((pots + cx)->blocks) {
+            free((pots + cx)->blocks);
+        }
+    }
     if (prog_shadow.win) {
         delwin(prog_shadow.win);
+    }
+    if (prog.bar_perim_bot) {
+        free(prog.bar_perim_bot);
+    }
+    if (prog.bar_perim_top) {
+        free(prog.bar_perim_top);
     }
     if (prog.prog_bar) {
         free(prog.prog_bar);
@@ -611,6 +798,9 @@ void build_win (struct win_s *w, const char *title, int x, int y,
     int width, int height) {
     w->win = newwin(height, width, y, x);
     w->title_len = strlen(title);
+    if (w->title) {
+        free(w->title);
+    }
     w->title = strchtype(title, w->title_len);
     w->text_w = width - 2;
     w->text_h = height - 2;
@@ -729,7 +919,7 @@ void prep_cmds () {
     waddchstr(cmds.win, drive_prompt);
     move_to(&cmds, cmds.cur_x + strlen(drive_prompt_str), cmds.cur_y);
     /* Actual drive stats if drive is selected */
-    if (drive_selected) {
+    if (drive_selected == 2) {
         sprintf(drive_stats_str,
             "%s    %u blocks * %u B/block = %u MiB",
             fs_info.name, *(fs_info.nblocks), BYTES_PER_BLOCK,
@@ -746,19 +936,19 @@ void prep_cmds () {
     move_to(&cmds, cmds.cur_x + inc, cmds.cur_y);
     waddchstr(cmds.win, f03);
     /* Disable if no drive selected */
-    if (!drive_selected) {
+    if (drive_selected < 2) {
         wchgat(cmds.win, strlen(f03_str), A_UNDERLINE, COLOR_ERROR, NULL);
     }
     move_to(&cmds, cmds.cur_x + inc, cmds.cur_y);
     waddchstr(cmds.win, f05);
     /* Disable if drive not scanned */
-    if (!drive_scanned) {
+    if (drive_scanned < 2) {
         wchgat(cmds.win, strlen(f05_str), A_UNDERLINE, COLOR_ERROR, NULL);
     }
     move_to(&cmds, cmds.cur_x + inc, cmds.cur_y);
     waddchstr(cmds.win, f07);
     /* Disable if drive not scanned */
-    if (!drive_scanned) {
+    if (drive_scanned < 2) {
         wchgat(cmds.win, strlen(f07_str), A_UNDERLINE, COLOR_ERROR, NULL);
     } else {
         wchgat(cmds.win, strlen(f07_str), A_NORMAL, 0, NULL);
@@ -766,7 +956,7 @@ void prep_cmds () {
     move_to(&cmds, cmds.cur_x + inc, cmds.cur_y);
     waddchstr(cmds.win, f09);
     /* Disable if files not rebuilt */
-    if (!drive_scanned) {
+    if (files_rebuilt < 2) {
         wchgat(cmds.win, strlen(f09_str), A_UNDERLINE, COLOR_ERROR, NULL);
     }
     move_to(&cmds, cmds.cur_x + inc, cmds.cur_y);
@@ -816,8 +1006,10 @@ int parse_input (int key) {
     /* Scan Drive */
     case KEY_F(3):
         /* Error if no drive selected */
-        if (!drive_selected) {
+        if (drive_selected == 0) {
             status(ERROR, "No drive selected!");
+        } else if (drive_scanned == 2) {
+            status(WARN, "Drive %s already scanned.", fs_info.name);
         } else {
             scan();
         }
@@ -825,7 +1017,7 @@ int parse_input (int key) {
     /* Scan Results */
     case KEY_F(5):
         /* Error if no drive not scanned */
-        if (!drive_scanned) {
+        if (drive_scanned < 2) {
             status(ERROR, "No drive scanned!");
         } else {
             status(WARN, "Drive scanning not fully implemented.");
@@ -834,7 +1026,7 @@ int parse_input (int key) {
     /* Rebuild Files */
     case KEY_F(7):
         /* Error if no drive not scanned */
-        if (!drive_scanned) {
+        if (drive_scanned < 2) {
             status(ERROR, "No drive scanned!");
         } else {
             status(WARN, "File recovery not implemented.");
@@ -868,9 +1060,6 @@ int main () {
     tui_init();
 
     do {
-        if (fs_info.name) {
-            drive_selected = 1;
-        }
         /* Prep all the windows */
         wnoutrefresh(stdscr);
         prep_op();

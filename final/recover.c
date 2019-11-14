@@ -552,7 +552,7 @@ void init (const char *fname) {
     }
 
     /* Save the name in the info struct */
-    fs_info.name = calloc(strlen(fname) + 1, sizeof(*fs_info.name));
+    fs_info.name = calloc(strlen(fname) + 1, sizeof(*fname));
     strcpy(fs_info.name, fname);
 
     /* Calculate the number of blocks on the drive */
@@ -621,7 +621,7 @@ int scan () {
         }
     skip_tests:
         /* Broadcast percentage through disk */
-        if (cur_percent == percent + 1) {
+        if (cur_percent >= percent + 1) {
             percent += 1;
             status(SCAN_PROG, percent);
         }

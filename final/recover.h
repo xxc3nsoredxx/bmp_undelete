@@ -25,7 +25,7 @@ extern struct fs_info_s fs_info;
  * LINK         started linking inode to root           inum(u32)
  * RECOVERED    file sucessfully linked                 name(char*)
  * SCAN         started drive scan                      ---
- * SCAN_IND     found potential ind block               level(u32), bnum(u32)
+ * SCAN_IND     found potential ind block               level(int), bnum(u32)
  * SCAN_BMP     found potential bmp header              bnum(u32)
  * SCAN_PROG    percentage through disk (1% interval)   percent(u32)
  * COLLECT      started collecting files                ---
