@@ -26,6 +26,7 @@
 #define COLOR_ERROR 1
 #define COLOR_WARN  2
 #define COLOR_PROG  3
+#define COLOR_GOOD  4
 
 #define DT_BLK      6
 
@@ -395,22 +396,55 @@ void setup_scan_progress () {
  * Log the findings on the output window
  */
 void log_potential_blocks () {
+    int y;
+    int x;
+
+    getyx(op.win, y, x);
     /* Print the statistics so far */
-    mvwprintw(op.win, 1, 1,
+    mvwprintw(op.win, y + 1, 1,
         "Number of potential 3x indirect blocks found: %u",
         (pots + 3)->count);
-    mvwprintw(op.win, 2, 1,
+    mvwprintw(op.win, y + 2, 1,
         "Number of potential 2x indirect blocks found: %u",
         (pots + 2)->count);
-    mvwprintw(op.win, 3, 1,
+    mvwprintw(op.win, y + 3, 1,
         "Number of potential 1x indirect blocks found: %u",
         (pots + 1)->count);
-    mvwprintw(op.win, 4, 1,
+    mvwprintw(op.win, y + 4, 1,
         "Number of potential BMP blocks found: %u",
         (pots + 0)->count);
+    wmove(op.win, y, x);
 
     /* Schedule it to be shown */
     wnoutrefresh(op.win);
+}
+
+/*
+ * Display a nice, columnized scan resukts page
+ */
+void display_scan_results () {
+    uint32_t cx;
+    uint32_t cx2;
+    werase(op.win);
+
+    /* List potential BMP header blocks */
+    wmove(op.win, 1, 1);
+    wprintw(op.win, "Potential BMP Headers");
+    for (cx = 0; cx < pots->count; cx++) {
+        wmove(op.win, cx + 2, 1);
+        wprintw(op.win, "%u", *(pots->blocks + cx));
+    }
+
+    /* List potential indirect blocks */
+    for (cx = 1; cx <= 3; cx++) {
+        wmove(op.win, 1, op.text_w * cx / 4);
+        wprintw(op.win, "Potential %ux Indirects", cx);
+
+        for (cx2 = 0; cx2 < (pots + cx)->count; cx2++) {
+            wmove(op.win, cx2 + 2, op.text_w * cx / 4);
+            wprintw(op.win, "%u", *((pots + cx)->blocks + cx2));
+        }
+    }
 }
 
 /* 
@@ -838,6 +872,7 @@ void tui_init () {
     init_pair(COLOR_ERROR, COLOR_RED, COLOR_BLACK);
     init_pair(COLOR_WARN, COLOR_YELLOW, COLOR_BLACK);
     init_pair(COLOR_PROG, COLOR_BLUE, COLOR_WHITE);
+    init_pair(COLOR_GOOD, COLOR_GREEN, COLOR_BLACK);
 
     /* Create the main output window */
     build_win(&op, "Output", 0, 0, COLS, LINES - 4);
@@ -933,11 +968,19 @@ void prep_cmds () {
     inc = cmds.text_w / 6;
     move_to(&cmds, 1, 2);
     waddchstr(cmds.win, f01);
+    /* Mark as done after drive selected */
+    if (drive_selected == 2) {
+        wchgat(cmds.win, strlen(f01_str), A_NORMAL, COLOR_GOOD, NULL);
+    }
     move_to(&cmds, cmds.cur_x + inc, cmds.cur_y);
     waddchstr(cmds.win, f03);
     /* Disable if no drive selected */
     if (drive_selected < 2) {
         wchgat(cmds.win, strlen(f03_str), A_UNDERLINE, COLOR_ERROR, NULL);
+    }
+    /* Mark as done after drive scanned */
+    else if (drive_scanned == 2) {
+        wchgat(cmds.win, strlen(f03_str), A_NORMAL, COLOR_GOOD, NULL);
     }
     move_to(&cmds, cmds.cur_x + inc, cmds.cur_y);
     waddchstr(cmds.win, f05);
@@ -950,8 +993,6 @@ void prep_cmds () {
     /* Disable if drive not scanned */
     if (drive_scanned < 2) {
         wchgat(cmds.win, strlen(f07_str), A_UNDERLINE, COLOR_ERROR, NULL);
-    } else {
-        wchgat(cmds.win, strlen(f07_str), A_NORMAL, 0, NULL);
     }
     move_to(&cmds, cmds.cur_x + inc, cmds.cur_y);
     waddchstr(cmds.win, f09);
@@ -1017,16 +1058,16 @@ int parse_input (int key) {
     /* Scan Results */
     case KEY_F(5):
         /* Error if no drive not scanned */
-        if (drive_scanned < 2) {
+        if (drive_scanned == 0) {
             status(ERROR, "No drive scanned!");
         } else {
-            status(WARN, "Drive scanning not fully implemented.");
+            display_scan_results();
         }
         return 1;
     /* Rebuild Files */
     case KEY_F(7):
         /* Error if no drive not scanned */
-        if (drive_scanned < 2) {
+        if (drive_scanned == 0) {
             status(ERROR, "No drive scanned!");
         } else {
             status(WARN, "File recovery not implemented.");
@@ -1035,7 +1076,7 @@ int parse_input (int key) {
     /* List Files */
     case KEY_F(9):
         /* Error if no rebuilt files */
-        if (!files_rebuilt) {
+        if (files_rebuilt == 0) {
             status(ERROR, "No files have been rebuilt yet!");
         } else {
             status(WARN, "File recovery not implemented.");
