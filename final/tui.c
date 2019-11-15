@@ -101,7 +101,7 @@ int block_dev_choice = -1;
  * Turns a char* into a chtype*
  * Returns malloc'ed address if created, 0 otherwise
  */
-chtype* strchtype (const char *src, size_t len) {
+chtype* strchtype (chtype *dest, const char *src, size_t len) {
     chtype *ret = 0;
     size_t cx;
 
@@ -112,6 +112,10 @@ chtype* strchtype (const char *src, size_t len) {
         for (cx = 0; cx < len && cx < strlen(src); cx++) {
             *(ret + cx) = *(src + cx);
         }
+    }
+
+    if (dest) {
+        free(dest);
     }
 
     return ret;
@@ -126,13 +130,19 @@ void move_to(struct win_s *w, int x, int y) {
     wmove(w->win, w->cur_y, w->cur_x);
 }
 
+void close_win (WINDOW *w) {
+    wclear(w);
+    wnoutrefresh(w);
+    delwin(w);
+}
+
 /*
  * Generate a popup for ERROR and WARN
  */
 void create_error (enum status_code_e s, const char *fmt, va_list ap) {
     char *title;
     char message_str [100];
-    chtype *message;
+    chtype *message = 0;
     int message_len;
     int x;
     int y;
@@ -151,16 +161,13 @@ void create_error (enum status_code_e s, const char *fmt, va_list ap) {
     }
 
     err.title_len = strlen(title);
-    if (err.title) {
-        free(err.title);
-    }
-    err.title = strchtype(title, err.title_len);
+    err.title = strchtype(err.title, title, err.title_len);
 
     /* Convert the message into it's string form */
     message_len = sizeof(message_str) / sizeof(*message_str);
     memset(message_str, 0, message_len);
     message_len = vsprintf(message_str, fmt, ap);
-    message = strchtype(message_str, message_len);
+    message = strchtype(message, message_str, message_len);
 
     /* Center the popup horizontally */
     width = message_len + 6;
@@ -196,8 +203,6 @@ void create_error (enum status_code_e s, const char *fmt, va_list ap) {
     wnoutrefresh(err_shadow.win);
     wnoutrefresh(err.win);
     doupdate();
-
-    getch();
 }
 
 /*
@@ -226,10 +231,7 @@ void update_progress (int new_p) {
     }
     /* Create the percent string */
     sprintf(percent_prog_str, "% 3d%% ", new_p);
-    if (prog.percent_prog) {
-        free(prog.percent_prog);
-    }
-    prog.percent_prog = strchtype(percent_prog_str, 5);
+    prog.percent_prog = strchtype(prog.percent_prog, percent_prog_str, 5);
     prog.cur_y += 4;
     wmove(prog.win, prog.cur_y, prog.cur_x);
     waddchstr(prog.win, prog.percent_prog);
@@ -280,10 +282,8 @@ void update_progress (int new_p) {
     wmove(prog.win, prog.cur_y, prog.cur_x);
     wchgat(prog.win, prog.bar_w, A_REVERSE, COLOR_PROG, NULL);
 
-    /* Draw to screen */
     wnoutrefresh(prog_shadow.win);
     wnoutrefresh(prog.win);
-    doupdate();
 }
 
 /*
@@ -345,10 +345,8 @@ void setup_scan_progress () {
     bar_len = prog.text_w - (lpad + percent_len + rpad);
     bar_perim_top_str = calloc(bar_len + 1, sizeof(*bar_perim_top_str));
     memset(bar_perim_top_str, ' ', bar_len);
-    if (prog.bar_perim_top) {
-        free(prog.bar_perim_top);
-    }
-    prog.bar_perim_top = strchtype(bar_perim_top_str, bar_len);
+    prog.bar_perim_top = strchtype(prog.bar_perim_top,
+        bar_perim_top_str, bar_len);
     *(prog.bar_perim_top + 0) = BOX_TL;
     *(prog.bar_perim_top + 1) = BOX_HOR;
     *(prog.bar_perim_top + bar_len - 2) = BOX_HOR;
@@ -356,31 +354,20 @@ void setup_scan_progress () {
 
     bar_perim_bot_str = calloc(bar_len + 1, sizeof(*bar_perim_bot_str));
     memset(bar_perim_bot_str, ' ', bar_len);
-    if (prog.bar_perim_bot) {
-        free(prog.bar_perim_bot);
-    }
-    prog.bar_perim_bot = strchtype(bar_perim_bot_str, bar_len);
+    prog.bar_perim_bot = strchtype(prog.bar_perim_bot,
+        bar_perim_bot_str, bar_len);
     *(prog.bar_perim_bot + 0) = BOX_BL;
     *(prog.bar_perim_bot + 1) = BOX_HOR;
     *(prog.bar_perim_bot + bar_len - 2) = BOX_HOR;
     *(prog.bar_perim_bot + bar_len - 1) = BOX_BR;
 
     prog.title_len = strlen(title);
-    if (prog.title) {
-        free(prog.title);
-    }
-    prog.title = strchtype(title, prog.title_len);
+    prog.title = strchtype(prog.title, title, prog.title_len);
     /* Build the message that goes abve the progress bar */
     prog.scan_msg_len = sprintf(scan_msg_str, "%s%s%s",
         scan_msg_p1, fs_info.name, scan_msg_p2);
-    if (prog.scan_msg) {
-        free(prog.scan_msg);
-    }
-    prog.scan_msg = strchtype(scan_msg_str, prog.scan_msg_len);
-    if (prog.percent_prog) {
-        free(prog.percent_prog);
-    }
-    prog.percent_prog = strchtype("  0% ", 5);
+    prog.scan_msg = strchtype(prog.scan_msg, scan_msg_str, prog.scan_msg_len);
+    prog.percent_prog = strchtype(prog.percent_prog, "  0% ", 5);
 
     /* Set up the shadow */
     prog_shadow.win = newwin(height, width, y, x + 1);
@@ -464,12 +451,14 @@ void status (enum status_code_e sl, ...) {
         drive_selected = 1;
         mvwprintw(op.win, 1, 1,
             "Gathering basic information about groups:");
+        wnoutrefresh(op.win);
         break;
     case GROUP_PROG:
         va_start(ap, sl);
         var2 = va_arg(ap, uint32_t);
         va_end(ap);
         wprintw(op.win, " %u", var2);
+        wnoutrefresh(op.win);
         break;
 
     case POP:
@@ -504,7 +493,6 @@ void status (enum status_code_e sl, ...) {
         log_potential_blocks();
         wnoutrefresh(prog_shadow.win);
         wnoutrefresh(prog.win);
-        doupdate();
         break;
     case SCAN_BMP:
         va_start(ap, sl);
@@ -521,7 +509,6 @@ void status (enum status_code_e sl, ...) {
         log_potential_blocks();
         wnoutrefresh(prog_shadow.win);
         wnoutrefresh(prog.win);
-        doupdate();
         break;
     case SCAN_PROG:
         va_start(ap, sl);
@@ -540,8 +527,12 @@ void status (enum status_code_e sl, ...) {
     case DONE:
         if (drive_selected == 1) {
             drive_selected = 2;
+            close_win(blk_dev.win);
+            close_win(blk_dev_shadow.win);
         } else if (drive_scanned == 1) {
             drive_scanned = 2;
+            close_win(prog.win);
+            close_win(prog_shadow.win);
         }
         break;
 
@@ -550,13 +541,21 @@ void status (enum status_code_e sl, ...) {
         va_start(ap, sl);
         create_error(sl, va_arg(ap, const char*), ap);
         va_end(ap);
+        getch();
+        close_win(err.win);
+        close_win(err_shadow.win);
         break;
     case WARN:
         va_start(ap, sl);
         create_error(sl, va_arg(ap, const char*), ap);
         va_end(ap);
+        getch();
+        close_win(err.win);
+        close_win(err_shadow.win);
         break;
     }
+
+    doupdate();
 }
 
 /*
@@ -565,11 +564,11 @@ void status (enum status_code_e sl, ...) {
 void block_dev_popup () {
     const char *title = "Block Device List";
     const char *inst1_str = "[Up/Down]: Choose";
-    chtype *inst1 = strchtype(inst1_str, strlen(inst1_str));
+    chtype *inst1 = 0;
     const char *inst2_str = "[Enter]: Confirm";
-    chtype *inst2 = strchtype(inst2_str, strlen(inst2_str));
+    chtype *inst2 = 0;
     const char *inst3_str = "[Q]: Cancel";
-    chtype *inst3 = strchtype(inst3_str, strlen(inst3_str));
+    chtype *inst3 = 0;
     int cx;
     size_t longest_name = 0;
     int x;
@@ -578,18 +577,17 @@ void block_dev_popup () {
     int height;
     attr_t attr = A_REVERSE;
 
+    inst1 = strchtype(inst1, inst1_str, strlen(inst1_str));
+    inst2 = strchtype(inst2, inst2_str, strlen(inst2_str));
+    inst3 = strchtype(inst3, inst3_str, strlen(inst3_str));
+
     blk_dev.title_len = strlen(title);
-    if (blk_dev.title) {
-        free(blk_dev.title);
-    }
-    blk_dev.title = strchtype(title, blk_dev.title_len);
+    blk_dev.title = strchtype(blk_dev.title, title, blk_dev.title_len);
 
     for (cx = 0; cx < n_block_devices; cx++) {
         /* Convert the names into chtype* */
-        if (*(block_devices + cx)) {
-            free(*(block_devices + cx));
-        }
-        *(block_devices + cx) = strchtype(*(block_devices_str + cx),
+        *(block_devices + cx) = strchtype(*(block_devices + cx),
+            *(block_devices_str + cx),
             strlen(*(block_devices_str + cx)));
 
         /* Get the longest device name */
@@ -653,8 +651,6 @@ void block_dev_popup () {
     wbkgd(blk_dev.win, attr);
 
     wnoutrefresh(blk_dev_shadow.win);
-    wnoutrefresh(blk_dev.win);
-    doupdate();
 
     /* Selection */
     for(cx = 0; ; ) {
@@ -832,10 +828,7 @@ void build_win (struct win_s *w, const char *title, int x, int y,
     int width, int height) {
     w->win = newwin(height, width, y, x);
     w->title_len = strlen(title);
-    if (w->title) {
-        free(w->title);
-    }
-    w->title = strchtype(title, w->title_len);
+    w->title = strchtype(w->title, title, w->title_len);
     w->text_w = width - 2;
     w->text_h = height - 2;
     move_to(w, 1, 1);
@@ -940,14 +933,16 @@ void prep_cmds () {
     prep_win(cmds);
 
     /* Create the command window's related strings */
-    drive_prompt = strchtype(drive_prompt_str, strlen(drive_prompt_str));
-    no_drive_msg = strchtype(no_drive_msg_str, strlen(no_drive_msg_str));
-    f01 = strchtype(f01_str, strlen(f01_str));
-    f03 = strchtype(f03_str, strlen(f03_str));
-    f05 = strchtype(f05_str, strlen(f05_str));
-    f07 = strchtype(f07_str, strlen(f07_str));
-    f09 = strchtype(f09_str, strlen(f09_str));
-    f11 = strchtype(f11_str, strlen(f11_str));
+    drive_prompt = strchtype(drive_prompt,
+        drive_prompt_str, strlen(drive_prompt_str));
+    no_drive_msg = strchtype(no_drive_msg,
+        no_drive_msg_str, strlen(no_drive_msg_str));
+    f01 = strchtype(f01, f01_str, strlen(f01_str));
+    f03 = strchtype(f03, f03_str, strlen(f03_str));
+    f05 = strchtype(f05, f05_str, strlen(f05_str));
+    f07 = strchtype(f07, f07_str, strlen(f07_str));
+    f09 = strchtype(f09, f09_str, strlen(f09_str));
+    f11 = strchtype(f11, f11_str, strlen(f11_str));
 
     /* Prepare drive stats */
     move_to(&cmds, 1, 1);
@@ -959,7 +954,8 @@ void prep_cmds () {
             "%s    %u blocks * %u B/block = %u MiB",
             fs_info.name, *(fs_info.nblocks), BYTES_PER_BLOCK,
             (*(fs_info.nblocks) >> 10) * (BYTES_PER_BLOCK >> 10));
-        drive_stats = strchtype(drive_stats_str, strlen(drive_stats_str));
+        drive_stats = strchtype(drive_stats,
+            drive_stats_str, strlen(drive_stats_str));
         waddchstr(cmds.win, drive_stats);
     } else {
         waddchstr(cmds.win, no_drive_msg);
@@ -1100,9 +1096,9 @@ int main () {
     /* ncurses related initialization */
     tui_init();
 
+    /* Prep all the windows */
+    wnoutrefresh(stdscr);
     do {
-        /* Prep all the windows */
-        wnoutrefresh(stdscr);
         prep_op();
         prep_cmds();
         doupdate();
