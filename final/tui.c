@@ -417,7 +417,7 @@ void log_potential_blocks () {
 }
 
 /*
- * Display a nice, columnized scan resukts page
+ * Display a nice, columnized scan results page
  */
 void display_scan_results () {
     uint32_t cx;
@@ -460,7 +460,7 @@ void display_recovery_results () {
 
     for (cx = 0; cx < file_count; cx++) {
         /* Wrap if next entry doesn't fit */
-        if (y + 9 >= op.text_h) {
+        if (y + 7 > op.text_h) {
             y = 1;
             x += op.text_w / 3;
         }
@@ -483,7 +483,9 @@ void display_recovery_results () {
                 wmove(op.win, y, x);
             }
         }
-        y++;
+        if (cx2 % 4 != 0) {
+            y++;
+        }
         x -= 8;
 
         for (cx2 = 0; cx2 < 3; cx2++) {
@@ -540,6 +542,11 @@ void status (enum status_code_e sl, ...) {
         va_end(ap);
 
         getyx(op.win, y, x);
+        if (y > op.text_h) {
+            y--;
+            scroll(op.win);
+            wmove(op.win, y, x);
+        }
         wprintw(op.win, "Populating inde %u", var2);
         y++;
         wmove(op.win, y, x);
@@ -557,6 +564,11 @@ void status (enum status_code_e sl, ...) {
         (files + file_count - 1)->last_dir = var3;
 
         getyx(op.win, y, x);
+        if (y > op.text_h) {
+            y--;
+            scroll(op.win);
+            wmove(op.win, y, x);
+        }
         wprintw(op.win, "  Direct blocks: %u -> %u", var2, var3);
         y++;
         wmove(op.win, y, x);
@@ -573,6 +585,11 @@ void status (enum status_code_e sl, ...) {
         *((files + file_count - 1)->indirs + var2 - 1) = var3;
 
         getyx(op.win, y, x);
+        if (y > op.text_h) {
+            y--;
+            scroll(op.win);
+            wmove(op.win, y, x);
+        }
         wprintw(op.win, "  %ux indirect block: %u", var2, var3);
         y++;
         wmove(op.win, y, x);
@@ -586,6 +603,11 @@ void status (enum status_code_e sl, ...) {
         va_end(ap);
 
         getyx(op.win, y, x);
+        if (y > op.text_h) {
+            y--;
+            scroll(op.win);
+            wmove(op.win, y, x);
+        }
         wprintw(op.win, "Linking inde %u to root directory", var2);
         y++;
         wmove(op.win, y, x);
@@ -604,6 +626,11 @@ void status (enum status_code_e sl, ...) {
         strcpy((files + file_count - 1)->name, var4);
 
         getyx(op.win, y, x);
+        if (y > op.text_h) {
+            y--;
+            scroll(op.win);
+            wmove(op.win, y, x);
+        }
         wprintw(op.win, "Recovered into file %s", var4);
         y++;
         wmove(op.win, y, x);
@@ -679,6 +706,11 @@ void status (enum status_code_e sl, ...) {
         va_end(ap);
 
         getyx(op.win, y, x);
+        if (y > op.text_h) {
+            y--;
+            scroll(op.win);
+            wmove(op.win, y, x);
+        }
         wprintw(op.win, "Running sanity check on block %u", var2);
         y++;
         wmove(op.win, y, x);
@@ -700,6 +732,11 @@ void status (enum status_code_e sl, ...) {
             3 * sizeof(*((files + file_count - 1)->indirs)));
 
         getyx(op.win, y, x);
+        if (y > op.text_h) {
+            y--;
+            scroll(op.win);
+            wmove(op.win, y, x);
+        }
         wprintw(op.win, "Reserved inde %u", var2);
         y++;
         wmove(op.win, y, x);
@@ -1026,7 +1063,7 @@ void build_win (struct win_s *w, const char *title, int x, int y,
     move_to(w, 1, 1);
 
     if (w->text_h > 1) {
-        wsetscrreg(w->win, 1, w->text_h + 1);
+        wsetscrreg(w->win, 1, w->text_h);
         scrollok(w->win, TRUE);
     } else {
         scrollok(w->win, FALSE);
