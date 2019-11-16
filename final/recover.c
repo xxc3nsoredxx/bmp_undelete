@@ -657,13 +657,13 @@ void collect () {
         /* Sanity check: needed inderect blocks are found */
         status(SANITY, bnum);
         if (size_blocks > 12 && !find_next_ind(bnum + 11, 0)) {
-            status(WARN, "Failed, skipping...\n");
+            status(WARN, "Failed, skipping...");
             continue;
         }
 
         /* Try to reserve an inode*/
         if (!(inum = res_ino())) {
-            status(ERROR, "Unable to reserve an inode, exiting...\n");
+            status(ERROR, "Unable to reserve an inode, exiting...");
             exit(-1);
         }
         status(INODE, inum);

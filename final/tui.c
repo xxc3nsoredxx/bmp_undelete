@@ -67,6 +67,14 @@ struct pot_block_s {
     uint32_t count;
 };
 
+struct file_info_s {
+    char *name;
+    uint32_t inum;
+    uint32_t first_dir;
+    uint32_t last_dir;
+    uint32_t indirs [3];
+};
+
 struct win_s op;
 struct win_s cmds;
 struct win_s err;
@@ -96,6 +104,8 @@ char **block_devices_str = 0;
 chtype **block_devices = 0;
 int n_block_devices = 0;
 int block_dev_choice = -1;
+int file_count = 0;
+struct file_info_s *files = 0;
 
 /*
  * Turns a char* into a chtype*
@@ -412,6 +422,7 @@ void log_potential_blocks () {
 void display_scan_results () {
     uint32_t cx;
     uint32_t cx2;
+
     werase(op.win);
 
     /* List potential BMP header blocks */
@@ -434,13 +445,73 @@ void display_scan_results () {
     }
 }
 
+/*
+ * Show the reults of the file recovery
+ */
+void display_recovery_results () {
+    int cx;
+    int cx2;
+    int y;
+    int x;
+
+    werase(op.win);
+    y = 1;
+    x = 1;
+
+    for (cx = 0; cx < file_count; cx++) {
+        /* Wrap if next entry doesn't fit */
+        if (y + 9 >= op.text_h) {
+            y = 1;
+            x += op.text_w / 3;
+        }
+
+        mvwprintw(op.win, y, x, "File: %s", (files + cx)->name);
+        y++;
+        x += 2;
+
+        mvwprintw(op.win, y, x, "Inode: %u", (files + cx)->inum);
+        y++;
+
+        mvwprintw(op.win, y, x, "Directs:");
+        getyx(op.win, y, x);
+        for (cx2 = 0;
+            (files + cx)->first_dir + cx2 <= (files + cx)->last_dir;
+            cx2++) {
+            wprintw(op.win, " %-9u", (files + cx)->first_dir + cx2);
+            if (cx2 % 4 == 3) {
+                y++;
+                wmove(op.win, y, x);
+            }
+        }
+        y++;
+        x -= 8;
+
+        for (cx2 = 0; cx2 < 3; cx2++) {
+            mvwprintw(op.win, y, x, "%dx indirect: ", cx2 + 1);
+            if (*((files + cx)->indirs + cx2)) {
+                wprintw(op.win, "%u", *((files + cx)->indirs + cx2));
+            } else {
+                wprintw(op.win, "---");
+            }
+            y++;
+        }
+
+        y++;
+        x -= 2;
+    }
+}
+
 /* 
  * Recieve the broadcasted status
  */
 void status (enum status_code_e sl, ...) {
     va_list ap;
+    int y;
+    int x;
     int var1;
     uint32_t var2;
+    uint32_t var3;
+    char *var4;
 
     switch (sl) {
     /* Handle methods */
@@ -449,6 +520,7 @@ void status (enum status_code_e sl, ...) {
 
     case GROUP_INFO:
         drive_selected = 1;
+        werase(op.win);
         mvwprintw(op.win, 1, 1,
             "Gathering basic information about groups:");
         wnoutrefresh(op.win);
@@ -462,20 +534,88 @@ void status (enum status_code_e sl, ...) {
         break;
 
     case POP:
+        va_start(ap, sl);
+        /* Extract the inode number */
+        var2 = va_arg(ap, uint32_t);
+        va_end(ap);
+
+        getyx(op.win, y, x);
+        wprintw(op.win, "Populating inde %u", var2);
+        y++;
+        wmove(op.win, y, x);
+        wnoutrefresh(op.win);
         break;
     case POP_DIR:
+        va_start(ap, sl);
+        /* Extract the first/last block number */
+        var2 = va_arg(ap, uint32_t);
+        var3 = va_arg(ap, uint32_t);
+        va_end(ap);
+
+        /* Put the direct blocks into the proper entry in the array */
+        (files + file_count - 1)->first_dir = var2;
+        (files + file_count - 1)->last_dir = var3;
+
+        getyx(op.win, y, x);
+        wprintw(op.win, "  Direct blocks: %u -> %u", var2, var3);
+        y++;
+        wmove(op.win, y, x);
+        wnoutrefresh(op.win);
         break;
     case POP_IND:
+        va_start(ap, sl);
+        /* Extract the indirect level and block number */
+        var2 = va_arg(ap, uint32_t);
+        var3 = va_arg(ap, uint32_t);
+        va_end(ap);
+
+        /* Put the indirect block into the proper entry in the array */
+        *((files + file_count - 1)->indirs + var2 - 1) = var3;
+
+        getyx(op.win, y, x);
+        wprintw(op.win, "  %ux indirect block: %u", var2, var3);
+        y++;
+        wmove(op.win, y, x);
+        wnoutrefresh(op.win);
         break;
 
     case LINK:
+        va_start(ap, sl);
+        /* Extract the inode number */
+        var2 = va_arg(ap, uint32_t);
+        va_end(ap);
+
+        getyx(op.win, y, x);
+        wprintw(op.win, "Linking inde %u to root directory", var2);
+        y++;
+        wmove(op.win, y, x);
+        wnoutrefresh(op.win);
         break;
     case RECOVERED:
+        va_start(ap, sl);
+        /* Extract the file name */
+        var4 = va_arg(ap, char*);
+        va_end(ap);
+
+        /* Put the file name into the proper entry in the array */
+        (files + file_count - 1)->name =
+            calloc(strlen(var4) + 1,
+                sizeof(*((files + file_count - 1)->name)));
+        strcpy((files + file_count - 1)->name, var4);
+
+        getyx(op.win, y, x);
+        wprintw(op.win, "Recovered into file %s", var4);
+        y++;
+        wmove(op.win, y, x);
+        wnoutrefresh(op.win);
         break;
 
     case SCAN:
         drive_scanned = 1;
         setup_scan_progress();
+        log_potential_blocks();
+        wnoutrefresh(prog_shadow.win);
+        wnoutrefresh(prog.win);
         break;
     case SCAN_IND:
         va_start(ap, sl);
@@ -518,10 +658,52 @@ void status (enum status_code_e sl, ...) {
         break;
 
     case COLLECT:
+        files_rebuilt = 1;
+        werase(op.win);
+        /* Set up border */
+        wborder(op.win,
+            /* Left, right, top, bottom sides */
+            BOX_VER, BOX_VER, BOX_HOR, BOX_HOR,
+            BOX_TL, BOX_TR, BOX_BL, BOX_BR);
+        
+        /* Draw title */
+        mvwaddchstr(op.win, 0, 1, op.title);
+        mvwprintw(op.win, 1, 1, "Beginning file recovery...");
+        wmove(op.win, 2, 1);
+        wnoutrefresh(op.win);
         break;
     case SANITY:
+        va_start(ap, sl);
+        /* Extract the block number */
+        var2 = va_arg(ap, uint32_t);
+        va_end(ap);
+
+        getyx(op.win, y, x);
+        wprintw(op.win, "Running sanity check on block %u", var2);
+        y++;
+        wmove(op.win, y, x);
+        wnoutrefresh(op.win);
         break;
     case INODE:
+        va_start(ap, sl);
+        /* Extract the inode number */
+        var2 = va_arg(ap, uint32_t);
+        va_end(ap);
+
+        /* Add an entry into the file array */
+        file_count++;
+        files = realloc(files, file_count * sizeof(*files));
+        (files + file_count - 1)->inum = var2;
+        /* Ensure the indirs are set to 0 */
+        memset((files + file_count - 1)->indirs,
+            0,
+            3 * sizeof(*((files + file_count - 1)->indirs)));
+
+        getyx(op.win, y, x);
+        wprintw(op.win, "Reserved inde %u", var2);
+        y++;
+        wmove(op.win, y, x);
+        wnoutrefresh(op.win);
         break;
 
     case DONE:
@@ -533,6 +715,8 @@ void status (enum status_code_e sl, ...) {
             drive_scanned = 2;
             close_win(prog.win);
             close_win(prog_shadow.win);
+        } else if (files_rebuilt == 1) {
+            files_rebuilt = 2;
         }
         break;
 
@@ -749,6 +933,14 @@ void find_block_devs () {
 void tui_cleanup () {
     int cx;
 
+    if (files) {
+        for (cx = 0; cx < file_count; cx++) {
+            if ((files + cx)->name) {
+                free((files + cx)->name);
+            }
+        }
+        free(files);
+    }
     for (cx = 0; cx < 4; cx++) {
         if ((pots + cx)->blocks) {
             free((pots + cx)->blocks);
@@ -990,6 +1182,10 @@ void prep_cmds () {
     if (drive_scanned < 2) {
         wchgat(cmds.win, strlen(f07_str), A_UNDERLINE, COLOR_ERROR, NULL);
     }
+    /* Mark as done after files recovered */
+    else if (files_rebuilt == 2) {
+        wchgat(cmds.win, strlen(f07_str), A_NORMAL, COLOR_GOOD, NULL);
+    }
     move_to(&cmds, cmds.cur_x + inc, cmds.cur_y);
     waddchstr(cmds.win, f09);
     /* Disable if files not rebuilt */
@@ -1065,8 +1261,10 @@ int parse_input (int key) {
         /* Error if no drive not scanned */
         if (drive_scanned == 0) {
             status(ERROR, "No drive scanned!");
+        } else if (files_rebuilt == 2) {
+            status(WARN, "Files already rebuilt.");
         } else {
-            status(WARN, "File recovery not implemented.");
+            collect();
         }
         return 1;
     /* List Files */
@@ -1075,7 +1273,7 @@ int parse_input (int key) {
         if (files_rebuilt == 0) {
             status(ERROR, "No files have been rebuilt yet!");
         } else {
-            status(WARN, "File recovery not implemented.");
+            display_recovery_results();
         }
         return 1;
     /* Quit */
