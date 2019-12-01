@@ -81,6 +81,8 @@ void cleanup () {
     if (devf >= 0) {
         close(devf);
     }
+
+    sync();
 }
 
 /*
