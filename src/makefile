@@ -6,11 +6,11 @@ TUI_LFLAGS = -lncurses
 
 all: recover_cli recover_tui
 
-recover_cli: $(CLI_OBJS)
-	$(CC) $(CLI_OBJS) -o recover_cli
+bmp_undelete_cli: $(CLI_OBJS)
+	$(CC) $(CLI_OBJS) -o bmp_undelete_cli
 
-recover_tui: $(TUI_OBJS)
-	$(CC) $(TUI_OBJS) $(TUI_LFLAGS) -o recover_tui
+bmp_undelete_tui: $(TUI_OBJS)
+	$(CC) $(TUI_OBJS) $(TUI_LFLAGS) -o bmp_undelete_tui
 
 bmp.o: bmp.c bmp.h
 	$(CC) $(CFLAGS) bmp.c
