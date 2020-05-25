@@ -15,6 +15,9 @@ Requires ncurses to be installed to build the TUI.
 
 # Run
 
+Requires root permissions to access raw device files.
+If not running as root user, prepend with `sudo`.
+
 For the TUI, just run `./bmp_undelete_tui`.
 Everything else is done through the interface.
 
