@@ -4,7 +4,7 @@ CC = gcc
 CFLAGS = -Wall -Wextra --pedantic-errors -std=c89 -c
 TUI_LFLAGS = -lncurses
 
-all: recover_cli recover_tui
+all: bmp_undelete_cli bmp_undelete_tui
 
 bmp_undelete_cli: $(CLI_OBJS)
 	$(CC) $(CLI_OBJS) -o bmp_undelete_cli
